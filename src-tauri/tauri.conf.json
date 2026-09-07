@@ -1,0 +1,56 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "mailbox",
+  "version": "0.1.0",
+  "identifier": "com.lan-solo.mailbox",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1433",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "mailbox",
+        "width": 1240,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 580,
+        "resizable": true,
+        "backgroundColor": "#0b1220"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; frame-src 'self' blob: data:; child-src 'self' blob: data:"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNDOThDMzgzNENDREI2MEQKUldRTnRzMU1nOE9ZUE1ScmU2NmVIU2VaOFNlbGpUVDZHUW1aM1YvWXN6d1dXYVFhd1V2K2JnT3gK",
+      "endpoints": [
+        "https://github.com/LAN-SOLO/mailbox/releases/latest/download/latest.json"
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "targets": ["app", "dmg", "msi", "nsis", "deb", "rpm", "appimage"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "Productivity",
+    "shortDescription": "Mail-Client mit zwei Modi: einfach oder Experte — IMAP/SMTP, lokal",
+    "longDescription": "mailbox ist ein schlanker Mail-Client für IMAP/SMTP mit zwei Modi: der einfache Modus zeigt nur, was man zum Mailen braucht — der Expertenmodus schaltet Ordnerbaum, Verschieben, Quelltext, Header, Suche auf dem Server und mehr frei. Passwörter im System-Schlüsselbund, keine Telemetrie.",
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    }
+  }
+}
