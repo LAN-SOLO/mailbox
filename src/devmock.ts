@@ -21,6 +21,7 @@ const settings: Settings = {
   markReadOnOpen: true,
   confirmDelete: true,
   quoteOnReply: true,
+  composeHtml: true,
 };
 
 const accounts: Account[] = [
@@ -166,8 +167,14 @@ const handlers: Record<string, (a: Args) => unknown> = {
   delete_messages: () => undefined,
   empty_folder: () => undefined,
   save_attachment: () => undefined,
-  send_message: () => undefined,
-  save_draft: () => undefined,
+  send_message: (a) => {
+    (window as unknown as Record<string, unknown>).__lastDraft = a.draft;
+    console.log('[mock] send_message', JSON.stringify(a.draft));
+  },
+  save_draft: (a) => {
+    (window as unknown as Record<string, unknown>).__lastDraft = a.draft;
+    console.log('[mock] save_draft', JSON.stringify(a.draft));
+  },
   data_path: () => '/Users/mock/Library/Application Support/com.lan-solo.mailbox',
   check_update: () => null,
   install_update: () => undefined,

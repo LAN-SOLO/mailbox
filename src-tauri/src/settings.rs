@@ -22,6 +22,9 @@ pub struct Settings {
     pub mark_read_on_open: bool,
     pub confirm_delete: bool,
     pub quote_on_reply: bool,
+    /// Formatierung (Markdown) beim Senden als HTML-Teil mitschicken —
+    /// Klartext bleibt immer enthalten. Nur Expertenmodus.
+    pub compose_html: bool,
 }
 
 impl Default for Settings {
@@ -38,6 +41,7 @@ impl Default for Settings {
             mark_read_on_open: true,
             confirm_delete: true,
             quote_on_reply: true,
+            compose_html: true,
         }
     }
 }

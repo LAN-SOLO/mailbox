@@ -184,6 +184,16 @@ export function SettingsModal({
               />
               {t.confirmDeleteSetting}
             </label>
+            {expert && (
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={s.composeHtml}
+                  onChange={(e) => set('composeHtml', e.target.checked)}
+                />
+                {t.composeHtmlSetting}
+              </label>
+            )}
           </>
         )}
 
@@ -266,6 +276,7 @@ export function SettingsModal({
               <>
                 <div className="fieldlabel">{t.shortcuts}</div>
                 <div className="note">{t.shortcutHint}</div>
+                <div className="note">{t.editorShortcutHint}</div>
               </>
             )}
           </>

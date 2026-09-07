@@ -444,6 +444,7 @@ export default function App() {
       bcc: '',
       subject: '',
       body: signatureBlock(accountId),
+      quote: '',
       inReplyTo: null,
       references: [],
     });
@@ -477,6 +478,7 @@ export default function App() {
       bcc: '',
       subject,
       body: `${signatureBlock(d.accountId)}${settings?.quoteOnReply ? quoted(d) : ''}`,
+      quote: quoted(d).trim(),
       inReplyTo: d.messageId,
       references: refs,
     });
@@ -501,6 +503,7 @@ export default function App() {
       bcc: '',
       subject,
       body: `${signatureBlock(d.accountId)}\n\n${head}\n\n${d.text ?? ''}`,
+      quote: '',
       inReplyTo: null,
       references: [],
     });
@@ -601,6 +604,9 @@ export default function App() {
       if (typing || compose || accountEdit || showSettings || folderPrompt) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const idx = active ? messages.findIndex((m) => msgKey(m) === msgKey(active)) : -1;
+      // Buchstaben-Kürzel dürfen nicht im gleich darauf fokussierten
+      // Editor landen („r“ öffnet die Antwort und tippte bisher ein r).
+      if ('jkrafesun#/'.includes(e.key)) e.preventDefault();
       switch (e.key) {
         case 'j':
           if (messages[idx + 1]) openMessage(messages[idx + 1]);
@@ -635,7 +641,6 @@ export default function App() {
           newMessage();
           break;
         case '/':
-          e.preventDefault();
           setFocusSearchSignal((n) => n + 1);
           break;
       }
@@ -816,6 +821,8 @@ export default function App() {
         <Compose
           init={compose}
           accounts={accounts}
+          expert={expert}
+          composeHtml={settings.composeHtml}
           t={t}
           onClose={() => setCompose(null)}
           onSent={() => {

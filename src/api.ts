@@ -9,6 +9,7 @@ export type Mode = 'simple' | 'expert';
 export type FolderRole = 'inbox' | 'sent' | 'drafts' | 'trash' | 'junk' | 'archive' | 'other';
 export type Flag = 'seen' | 'flagged' | 'answered';
 export type SearchScope = 'all' | 'subject' | 'from' | 'to' | 'body';
+export type Priority = 'normal' | 'high' | 'low';
 
 export interface Account {
   id: string;
@@ -142,6 +143,14 @@ export interface Draft {
   attachments: string[];
   inReplyTo: string | null;
   references: string[];
+  /** HTML-Fassung (Expertenmodus, aus Markdown gerendert) — null = nur
+   *  Klartext. Wenn gesetzt: multipart/alternative, Klartext bleibt dabei. */
+  html: string | null;
+  /** Reply-To als Freitext-Adressliste, leer = keiner. */
+  replyTo: string;
+  priority: Priority;
+  /** Lesebestätigung anfordern (Disposition-Notification-To). */
+  readReceipt: boolean;
 }
 
 export interface TestResult {
@@ -169,6 +178,9 @@ export interface Settings {
   confirmDelete: boolean;
   /** Antworten als Zitat mit „>“ einfügen. */
   quoteOnReply: boolean;
+  /** Formatierung (Markdown) als HTML-Teil mitsenden — Klartext bleibt
+   *  immer enthalten. Nur Expertenmodus. */
+  composeHtml: boolean;
 }
 
 export interface UpdateInfo {

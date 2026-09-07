@@ -9,7 +9,7 @@ use mailbox_core::{parse_addresses, Address, Security};
 use std::path::Path;
 use std::time::Duration;
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Draft {
     pub account_id: String,
@@ -29,6 +29,20 @@ pub struct Draft {
     pub in_reply_to: Option<String>,
     #[serde(default)]
     pub references: Vec<String>,
+    /// HTML-Fassung des Bodys (Expertenmodus, aus Markdown gerendert).
+    /// Wenn gesetzt, geht die Nachricht als multipart/alternative raus —
+    /// `body` bleibt als text/plain-Teil erhalten.
+    #[serde(default)]
+    pub html: Option<String>,
+    /// Reply-To als Freitext-Adressliste (leer = keiner).
+    #[serde(default)]
+    pub reply_to: String,
+    /// "normal" | "high" | "low" → X-Priority + Importance.
+    #[serde(default)]
+    pub priority: String,
+    /// Lesebestätigung anfordern (Disposition-Notification-To).
+    #[serde(default)]
+    pub read_receipt: bool,
 }
 
 fn mailbox(a: &Address) -> Result<Mailbox, String> {
@@ -96,13 +110,46 @@ pub fn build_message(acc: &Account, draft: &Draft) -> Result<Message, String> {
         let refs = draft.references.iter().map(|r| angle(r)).collect::<Vec<_>>().join(" ");
         b = b.references(refs);
     }
+    for a in parse_addresses(&draft.reply_to) {
+        b = b.reply_to(mailbox(&a)?);
+    }
+    match draft.priority.as_str() {
+        "high" => {
+            b = b.raw_header(raw("X-Priority", "1 (Highest)"));
+            b = b.raw_header(raw("Importance", "high"));
+        }
+        "low" => {
+            b = b.raw_header(raw("X-Priority", "5 (Lowest)"));
+            b = b.raw_header(raw("Importance", "low"));
+        }
+        _ => {}
+    }
+    if draft.read_receipt {
+        let who = match acc.name.trim() {
+            "" => acc.email.clone(),
+            n => format!("{n} <{}>", acc.email),
+        };
+        b = b.raw_header(raw("Disposition-Notification-To", &who));
+    }
     b = b.header(lettre::message::header::UserAgent::from("mailbox (lan-solo.com)".to_string()));
 
     let text = SinglePart::plain(draft.body.clone());
+    let html = draft
+        .html
+        .as_deref()
+        .filter(|h| !h.trim().is_empty())
+        .map(|h| SinglePart::html(h.to_string()));
     if draft.attachments.is_empty() {
-        return b.singlepart(text).map_err(|e| e.to_string());
+        return match html {
+            Some(h) => b.multipart(MultiPart::alternative().singlepart(text).singlepart(h)),
+            None => b.singlepart(text),
+        }
+        .map_err(|e| e.to_string());
     }
-    let mut mp = MultiPart::mixed().singlepart(text);
+    let mut mp = match html {
+        Some(h) => MultiPart::mixed().multipart(MultiPart::alternative().singlepart(text).singlepart(h)),
+        None => MultiPart::mixed().singlepart(text),
+    };
     for p in &draft.attachments {
         let path = Path::new(p);
         let bytes = std::fs::read(path).map_err(|e| format!("Anhang „{p}“: {e}"))?;
@@ -115,6 +162,12 @@ pub fn build_message(acc: &Account, draft: &Draft) -> Result<Message, String> {
         mp = mp.singlepart(Attachment::new(name).body(bytes, ct));
     }
     b.multipart(mp).map_err(|e| e.to_string())
+}
+
+/// Rohe Kopfzeile ohne Encoding — nur für ASCII-Namen und -Werte gedacht.
+fn raw(name: &'static str, value: &str) -> lettre::message::header::HeaderValue {
+    use lettre::message::header::{HeaderName, HeaderValue};
+    HeaderValue::new(HeaderName::new_from_ascii_str(name), value.to_string())
 }
 
 fn angle(id: &str) -> String {
@@ -181,5 +234,92 @@ pub fn sec_label(s: Security) -> &'static str {
         Security::Tls => "TLS",
         Security::Starttls => "STARTTLS",
         Security::None => "unverschlüsselt",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn acc() -> Account {
+        Account {
+            id: "t".into(),
+            name: "Max Muster".into(),
+            email: "max@lan-solo.test".into(),
+            imap_host: "localhost".into(),
+            imap_port: 143,
+            imap_security: Security::None,
+            smtp_host: "localhost".into(),
+            smtp_port: 25,
+            smtp_security: Security::None,
+            username: "max".into(),
+            signature: String::new(),
+            color: "#38bdf8".into(),
+            password_stored: "file".into(),
+        }
+    }
+
+    fn fmt(d: &Draft) -> String {
+        String::from_utf8(build_message(&acc(), d).unwrap().formatted()).unwrap()
+    }
+
+    #[test]
+    fn plain_only_stays_singlepart() {
+        let out = fmt(&Draft { to: "a@lan-solo.test".into(), body: "hallo".into(), ..Default::default() });
+        assert!(out.contains("Content-Type: text/plain"));
+        assert!(!out.contains("multipart/alternative"));
+        assert!(!out.contains("X-Priority"));
+        assert!(!out.contains("Reply-To"));
+    }
+
+    #[test]
+    fn html_goes_multipart_alternative() {
+        let out = fmt(&Draft {
+            to: "a@lan-solo.test".into(),
+            body: "**fett**".into(),
+            html: Some("<p><b>fett</b></p>".into()),
+            ..Default::default()
+        });
+        assert!(out.contains("multipart/alternative"));
+        assert!(out.contains("text/plain"));
+        assert!(out.contains("text/html"));
+        assert!(out.contains("<b>fett</b>"));
+    }
+
+    #[test]
+    fn html_with_attachment_nests_alternative_in_mixed() {
+        let dir = std::env::temp_dir().join("mailbox-smtp-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let out = fmt(&Draft {
+            to: "a@lan-solo.test".into(),
+            body: "t".into(),
+            html: Some("<p>t</p>".into()),
+            attachments: vec![file.to_string_lossy().to_string()],
+            ..Default::default()
+        });
+        let mixed = out.find("multipart/mixed").unwrap();
+        let alt = out.find("multipart/alternative").unwrap();
+        assert!(mixed < alt);
+        assert!(out.contains("a.txt"));
+    }
+
+    #[test]
+    fn expert_headers() {
+        let out = fmt(&Draft {
+            to: "a@lan-solo.test".into(),
+            reply_to: "Büro <buero@lan-solo.test>".into(),
+            priority: "high".into(),
+            read_receipt: true,
+            ..Default::default()
+        });
+        assert!(out.contains("Reply-To:"));
+        assert!(out.contains("buero@lan-solo.test"));
+        assert!(out.contains("X-Priority: 1 (Highest)"));
+        assert!(out.contains("Importance: high"));
+        assert!(out.contains("Disposition-Notification-To: Max Muster <max@lan-solo.test>"));
+        let low = fmt(&Draft { to: "a@lan-solo.test".into(), priority: "low".into(), ..Default::default() });
+        assert!(low.contains("X-Priority: 5 (Lowest)"));
     }
 }

@@ -78,6 +78,7 @@ fn e2e_roundtrip() {
             attachments: vec![],
             in_reply_to: None,
             references: vec![],
+            ..Default::default()
         };
         let m = smtp::build_message(&anna, &d).unwrap();
         smtp::send(&anna, "pass", &m).unwrap();
@@ -156,6 +157,7 @@ fn e2e_roundtrip() {
         attachments: vec![],
         in_reply_to: Some("<abc@lan-solo.test>".into()),
         references: vec!["<abc@lan-solo.test>".into()],
+        ..Default::default()
     };
     let acc = st.account("t").unwrap();
     let msg = smtp::build_message(&acc, &draft).unwrap();

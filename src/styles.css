@@ -417,7 +417,68 @@ html[data-theme='dark'] .readbody iframe, .readbody iframe { background: #ffffff
 .errline { color: var(--red); font-size: 12px; margin: 6px 0; white-space: pre-wrap; }
 .okline { color: var(--green); font-size: 12px; margin: 4px 0; white-space: pre-wrap; }
 .modal.compose { width: 760px; max-width: 94vw; }
+.modal.compose.expert { width: 860px; }
 .modal.compose textarea { min-height: 260px; resize: vertical; font-family: var(--mono); line-height: 1.5; }
+.modal.compose .titlerow { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.modal.compose .titlerow h2 { margin: 0; }
+.modal.compose .titlerow select { width: auto; padding: 3px 6px; font-size: 11px; }
+.modal.compose .titlerow .fieldlabel { margin: 0; }
+.optrow { display: flex; gap: 14px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.optrow label.field { margin: 0; display: flex; align-items: center; gap: 8px; }
+.optrow label.field > span { margin: 0; }
+.optrow select { width: auto; padding: 3px 6px; font-size: 12px; }
+.optrow label.check { margin: 0; font-size: 12px; }
+/* Editor-Werkzeugleiste (Experte) — Mono-Labels statt Icons */
+.fmtbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: var(--bg-panel);
+}
+.fmtbar button {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-dim);
+  padding: 2px 6px;
+  min-width: 24px;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.fmtbar button:hover { background: var(--bg-raised); color: var(--text); }
+.fmtbar button.active { color: var(--blue); border-color: var(--blue-dim); }
+.fmtbar button.b { font-weight: 700; }
+.fmtbar button.i { font-style: italic; }
+.fmtbar button.s { text-decoration: line-through; }
+.fmtbar button.tool { font-size: 11px; color: var(--text-faint); }
+.fmtbar .sep { width: 1px; height: 16px; background: var(--border); margin: 0 4px; }
+.modal.compose .fmtbar + label.field textarea,
+.modal.compose .fmtbar + .previewframe { border-top-left-radius: 0; border-top-right-radius: 0; }
+.modal.compose .fmtbar + label.field { margin-bottom: 0; }
+.previewframe {
+  width: 100%;
+  height: 300px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #ffffff;
+  display: block;
+}
+.editfoot {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  margin: 4px 0 12px;
+  flex-wrap: wrap;
+}
+.editfoot .hint { flex: 1; min-width: 200px; line-height: 1.5; }
+.editfoot .cnt { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .modal.source { width: 900px; max-width: 94vw; }
 .modal.source pre {
   font: inherit;
