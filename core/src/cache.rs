@@ -70,9 +70,14 @@ mod tests {
 
     #[test]
     fn filename_is_safe() {
-        let p = cache_file(Path::new("/c"), "a/b", "Ordner mit Leerzeichen/Ü");
-        let s = p.to_string_lossy();
-        assert!(s.starts_with("/c/a_b/"));
-        assert!(!s[3..].contains(' '));
+        let root = Path::new("root");
+        let p = cache_file(root, "a/b", "Ordner mit Leerzeichen/Ü");
+        // Plattformneutral über Komponenten prüfen — Windows nutzt Backslashes.
+        let rel = p.strip_prefix(root).unwrap();
+        let parts: Vec<_> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0], "a_b");
+        assert!(parts[1].ends_with(".json"));
+        assert!(parts[1].chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')));
     }
 }
