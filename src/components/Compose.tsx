@@ -599,14 +599,14 @@ export function Compose({
           <button onClick={pick} disabled={busy !== 'idle'}>
             <IconPaperclip size={12} /> {t.attach}
           </button>
-          <button onClick={saveDraft} disabled={busy !== 'idle'} title={IS_MAC ? '⌘S' : 'Ctrl+S'}>
+          <button onClick={saveDraft} disabled={busy !== 'idle'} title={t.kbdSave}>
             {t.saveDraft}
           </button>
           <span className="spacer" />
           <button className="ghost" onClick={discard} disabled={busy !== 'idle'}>
             {t.discard}
           </button>
-          <button className="primary" onClick={send} disabled={busy !== 'idle'} title={IS_MAC ? '⌘⏎' : 'Ctrl+Enter'}>
+          <button className="primary" onClick={send} disabled={busy !== 'idle'} title={t.kbdSend}>
             <IconSend size={12} /> {busy === 'send' ? t.sending : t.send}
           </button>
         </div>

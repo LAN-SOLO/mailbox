@@ -153,7 +153,7 @@ Jeweils auf **macOS** (arm64 oder Intel) und **Windows 11** abhaken. Testkonto b
 - [ ] Konto entfernen → **nativer Dialog** fragt nach; „Abbrechen“ lässt das Konto stehen
 
 **Lesen**
-- [ ] HTML-Newsletter: externe Bilder blockiert, Hinweis sichtbar; „Externe Bilder laden“ lädt sie tatsächlich (WebKit/WebView2!)
+- [ ] HTML-Newsletter: externe Bilder blockiert, Hinweis sichtbar; „Externe Bilder laden“ lädt sie tatsächlich (WebKit/WebView2!); Layout des Newsletters intakt (eingebettete `<link>`/`<iframe>` sind entschärft)
 - [ ] Link in HTML-Mail öffnet den Standardbrowser; mailto:-Link öffnet „Neue Nachricht“ in mailbox
 - [ ] Anhang speichern: Dialog schlägt den Dateinamen ohne Pfad vor; Datei ist korrekt (PDF öffnen)
 - [ ] Experte: Header- und Quelltext-Ansicht, Esc schließt sie
@@ -173,7 +173,7 @@ Jeweils auf **macOS** (arm64 oder Intel) und **Windows 11** abhaken. Testkonto b
 - [ ] Rechtsklick → Ordner löschen fragt nativ nach; Abbrechen lässt ihn stehen
 - [ ] Löschen einer Nachricht: Rückfrage (falls eingestellt), Nachricht im Papierkorb; dort erneut löschen → „endgültig löschen?“, Abbrechen wirkt
 - [ ] Papierkorb leeren mit Rückfrage
-- [ ] Server-Suche (Experte) in allen Bereichen; Esc beendet die Suche
+- [ ] Server-Suche (Experte) in allen Bereichen, auch nach einem Wort mit Umlaut (z. B. „Grüße“); Esc beendet die Suche
 - [ ] Sammel-Posteingang mit zwei Konten: neueste oben, Kontofarbe sichtbar
 - [ ] Mehr laden bei > 50 Nachrichten ohne doppelte Zeilen
 - [ ] Rechner 10 min schlafen legen, aufwecken, „Abrufen“: Liste kommt ohne Hänger
@@ -185,3 +185,49 @@ Jeweils auf **macOS** (arm64 oder Intel) und **Windows 11** abhaken. Testkonto b
 
 **Updates**
 - [ ] „Nach Updates suchen“ meldet „Aktuell.“ bzw. findet ein höheres Release; Installation startet die App neu
+
+## 6. Verifikation (zweiter, unabhängiger Prüfer, 2026-10-19)
+
+Ziel: die Aussagen oben zu widerlegen. Alles unten wurde selbst ausgeführt, nicht übernommen.
+
+### 6.1 Selbst ausgeführte Tests
+
+| Prüfung | Ergebnis |
+|---|---|
+| `pnpm build` (tsc + vite) | grün |
+| `pnpm test` | 25/25 (17 Markdown + **8 neu** `scripts/mailhtml.test.ts`) |
+| `cargo test --workspace` | mailbox 11 + 3 ignoriert (E2E), core 18 — grün |
+| `cargo test --workspace -- --include-ignored` gegen GreenMail 2.1.0 (Docker, Ports 14025/14143) | 14/14 + 18/18 grün, inkl. **neu** `e2e_verify_unicode_and_big` |
+| `cargo clippy --workspace --all-targets` | 0 Warnungen |
+| `node scripts/ui-smoke/ui.mjs` (headless Chrome gegen `pnpm dev ?mock`) | 38/38, 0 Konsolenfehler |
+| `pnpm audit` / `cargo audit` | 0 / nur die oben offenen S11, S12 + „unmaintained“ — bestätigt |
+| Versionen | `package.json`, `tauri.conf.json`, `src-tauri/Cargo.toml`, `core/Cargo.toml`, `Cargo.lock` (mailbox + mailbox-core) = 1.0.0; keine 0.1.0 mehr im Code |
+| Dialog-Plugin (S1) | Quelltext geprüft: plugin-dialog 2.7.3 (JS = Rust) ruft `plugin:dialog\|message` mit `OkCancelCustom`; rfd 0.16 liefert auf macOS **und** Windows (`common-controls-v6`, von Tauri aktiviert) die Beschriftung des geklickten Knopfs → `=== okLabel` stimmt. |
+| Header-Härtung | Zusatzprobe: Betreff mit CR/LF/NUL, Anhangsname und MIME-Typ mit CR/LF, lokaler Anhang „Größe & Preis (1).txt“ in Ordner mit Leerzeichen/Umlaut → keine Header-Injection, RFC-2231-Dateiname korrekt. |
+
+### 6.2 Neu gefundene und behobene Fehler
+
+| # | Schwere | Befund | Nachweis / Status |
+|---|---|---|---|
+| V1 | mittel (Sicherheit/Privatsphäre) | **Tracking trotz Sperre:** `<link rel=preconnect>` und eingebettete `<iframe>`/`<object>`/`<embed>` in einer HTML-Mail bauen eine TCP-Verbindung zum Absender-Server auf, *bevor* die CSP die Anfrage sperrt — der Absender sieht IP und Öffnungszeitpunkt, obwohl „externe Bilder“ blockiert sind. `dns-prefetch` leakt analog über DNS (auf Windows ist der App-Ursprung `http://tauri.localhost`, dort ist Link-DNS-Prefetch standardmäßig an). | Chromium-Experiment mit Zähl-Socket: vorher 1–2 nackte Verbindungen, nachher 0 (3 Läufe). Behoben in `src/mailHtml.ts`: `<link>` → wirkungsloses `<meta data-link>`, Rahmen-Tags → unbekannte Elemente, `x-dns-prefetch-control: off` direkt nach der CSP-Meta. Test `scripts/mailhtml.test.ts`. |
+| V2 | mittel (Funktion) | **Server-Suche nach Umlauten fand nichts.** Der Suchbegriff ging als 8-Bit-Quoted-String; RFC 3501 erlaubt dort nur 7-Bit, strikte Server liefern leer (GreenMail nachgewiesen: Quoted → 0 Treffer, Literal → Treffer). | Behoben: Nicht-ASCII als `{n+}`-Literal (LITERAL+/LITERAL-, Gmail/Outlook/Dovecot/GreenMail), `CHARSET UTF-8` nur dann; ohne LITERAL+ wie bisher Quoted (synchrone Literale unterstützt die imap-Bibliothek für SEARCH nicht — ausprobiert, scheitert an der `+`-Antwort). Suche dafür nach `do_search` herausgelöst; Tests `search_criteria_literals` (Unit) und `e2e_verify_unicode_and_big` (E2E). |
+| V3 | niedrig (Windows) | Tooltips „Entwurf speichern“/„Senden“ zeigten auf deutschem Windows „Ctrl+S“/„Ctrl+Enter“ statt „Strg+…“ | Behoben über Wörterbuch-Einträge `kbdSave`/`kbdSend` (laufen durch `platformKeys`); mit `navigator.platform = Win32` geprüft: „Strg+S \| Strg+Enter“ / „Ctrl+S \| Ctrl+Enter“. |
+
+Handbuch (DE/EN) ergänzt: Suche findet Umlaute; Vorab-Verbindungen und eingebettete Fremdinhalte bleiben gesperrt; „Neu in 1.0“ nennt die Umlaut-Suche.
+
+### 6.3 Zusätzlich E2E abgedeckt (`e2e_verify_unicode_and_big`)
+
+- 12-MB-Anhang aus einem Pfad mit Leerzeichen, Umlaut und `&` senden → beim Empfänger byte-genau, Dateiname „Größe & Preis (final).bin“ erhalten.
+- Suche nach Umlaut-Betreff und über alle Bereiche; leere Suche → leer.
+- Nachricht in Ordner „Rechnungen äöü …“ verschieben, dort listen und **von dort** mit dem 12-MB-Anhang weiterleiten → kommt vollständig an.
+- Ungültiger Anhangsindex und fehlende lokale Datei → Fehler (mit Dateiname), nichts verschickt.
+- Umlaut-Ordner über den vom Server gelieferten (kodierten) Namen löschen.
+
+### 6.4 Bestätigt, aber nur statisch / Restrisiken
+
+- Leerlauf-Grenze 4 min < Standard-Abrufintervall 5 min: jeder automatische Abruf baut die IMAP-Verbindung neu auf (ein Login je Konto alle 5 min). Funktional korrekt, nur nicht sparsam.
+- Entwurf ersetzen löscht den alten nur mit `\Draft`-Flag — Entwürfe anderer Programme ohne dieses Flag bleiben als Dublette stehen (sicherer Fehlerfall).
+- Ohne UIDPLUS räumt das Ersetzen eines Entwurfs per `EXPUNGE` den ganzen Entwürfe-Ordner von \Deleted-Nachrichten.
+- Umlaut-Suche auf Servern ohne LITERAL+/LITERAL- hängt weiter von deren Nachsicht bei 8-Bit-Quoted-Strings ab.
+- Native Dialoge, Schlüsselbund, Updater, WebKit-Verhalten der CSP und der Link-Entschärfung: nur auf echter Hardware prüfbar (Checkliste oben).
+
