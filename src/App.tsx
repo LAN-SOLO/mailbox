@@ -95,6 +95,7 @@ export default function App() {
   const [focusSearchSignal, setFocusSearchSignal] = useState(0);
   const toastTimer = useRef<number | undefined>(undefined);
   const listReq = useRef(0);
+  const openReq = useRef(0);
 
   const lang: Lang = settings?.language ?? 'de';
   const t = dicts[lang];
@@ -141,7 +142,10 @@ export default function App() {
           setUpdateAvail(u);
           if (s.autoUpdate) {
             setInstalling(true);
-            api.installUpdate().catch(() => setInstalling(false));
+            api.installUpdate().catch((e) => {
+              setInstalling(false);
+              fail(e);
+            });
           }
         })
         .catch(() => {});
@@ -282,11 +286,15 @@ export default function App() {
   };
 
   const openMessage = async (m: MessageSummary) => {
+    // Schnelles Weiterklicken: nur die zuletzt angeforderte Nachricht zeigen —
+    // eine langsamere ältere Antwort darf sie nicht überschreiben.
+    const req = ++openReq.current;
     setActive(m);
     setDetail(null);
     setDetailLoading(true);
     try {
       const d = await api.getMessage(m.accountId, m.folder, m.uid);
+      if (req !== openReq.current) return;
       setDetail(d);
       if (settings?.markReadOnOpen && !m.seen) {
         api
@@ -298,9 +306,9 @@ export default function App() {
           .catch(() => {});
       }
     } catch (e) {
-      fail(e);
+      if (req === openReq.current) fail(e);
     } finally {
-      setDetailLoading(false);
+      if (req === openReq.current) setDetailLoading(false);
     }
   };
 
@@ -935,7 +943,8 @@ export default function App() {
         />
       )}
 
-      {updateAvail && (
+      {/* nicht über offenen Dialogen (verdeckte sonst deren Knöpfe) */}
+      {updateAvail && !compose && !showSettings && !accountEdit && !folderPrompt && (
         <div className="upd-banner">
           <span>
             {t.updateBanner} <strong>{updateAvail.version}</strong>
@@ -945,7 +954,10 @@ export default function App() {
             disabled={installing}
             onClick={() => {
               setInstalling(true);
-              api.installUpdate().catch(() => setInstalling(false));
+              api.installUpdate().catch((e) => {
+              setInstalling(false);
+              fail(e);
+            });
             }}
           >
             {installing ? t.updateInstalling : t.updateInstall}

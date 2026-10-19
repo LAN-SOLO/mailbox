@@ -23,7 +23,12 @@ export function wrapHtml(html: string, remote: boolean): string {
   // im Chromium-Test nachgewiesen). Laden dürfen sie ohnehin nichts: <link>
   // wird zu einem wirkungslosen <meta>, Rahmen zu unbekannten Elementen.
   // Dazu die DNS-Vorabauflösung für Links abschalten (http-Ursprung auf Windows).
+  // http-equiv aus der Mail (refresh = Weiterleitung des Rahmens auf eine
+  // fremde Adresse, eigene CSP/Prefetch-Schalter) wirkt nicht mehr: Chromium
+  // sperrt refresh in der Sandbox ohnehin (gemessen), WebKit ist hier nicht
+  // automatisiert geprüft — darum vorsorglich entschärft (seit 1.0, Runde 2).
   const defused = html
+    .replace(/<meta\b[^>]*>/gi, (tag) => tag.replace(/\bhttp-equiv(?=\s*=)/gi, 'data-http-equiv'))
     .replace(/<link(?=[\s/>])/gi, '<meta data-link')
     .replace(/<(\/?)(iframe|frame|frameset|object|embed|applet|portal)(?=[\s/>])/gi, '<$1x-$2');
   return `<!doctype html><meta http-equiv="Content-Security-Policy" content="${csp}"><meta http-equiv="x-dns-prefetch-control" content="off"><meta charset="utf-8"><meta name="referrer" content="no-referrer">${reset}${defused}`;

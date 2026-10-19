@@ -213,11 +213,17 @@ pub fn safe_filename(name: &str) -> String {
         .map(|c| if matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') { '_' } else { c })
         .collect();
     s = s.trim().trim_end_matches(['.', ' ']).trim_start_matches('.').to_string();
-    let stem = s.split('.').next().unwrap_or("").to_ascii_uppercase();
-    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
-            && stem.len() == 4
-            && stem.as_bytes()[3].is_ascii_digit());
+    // Windows-Gerätenamen gelten auch mit Endung und mit Leerzeichen vor dem
+    // Punkt („NUL .txt“); COM/LPT auch mit hochgestellter Ziffer (¹²³).
+    let stem = s.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    let port = |p: &str| {
+        stem.strip_prefix(p).is_some_and(|rest| {
+            let mut c = rest.chars();
+            matches!((c.next(), c.next()), (Some('0'..='9' | '¹' | '²' | '³'), None))
+        })
+    };
+    let reserved =
+        matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") || port("COM") || port("LPT");
     if reserved {
         s.insert(0, '_');
     }
@@ -357,6 +363,11 @@ JVBERi0xLjQK\r\n\
         assert_eq!(safe_filename("com1"), "_com1");
         assert_eq!(safe_filename("computer.txt"), "computer.txt");
         assert_eq!(safe_filename("datei.   "), "datei");
+        assert_eq!(safe_filename("nul .txt"), "_nul .txt");
+        assert_eq!(safe_filename("COM¹.log"), "_COM¹.log");
+        assert_eq!(safe_filename("conout$"), "_conout$");
+        assert_eq!(safe_filename("COM10.txt"), "COM10.txt");
+        assert_eq!(safe_filename("Console.txt"), "Console.txt");
         assert_eq!(safe_filename(".bashrc"), "bashrc");
         assert_eq!(safe_filename("rechnung\u{202e}fdp.exe"), "rechnungfdp.exe");
         assert_eq!(safe_filename(""), "");

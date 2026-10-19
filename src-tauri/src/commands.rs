@@ -130,8 +130,16 @@ pub fn list_accounts(st: State<'_, Shared>) -> Vec<Account> {
     st.accounts.lock().unwrap().clone()
 }
 
+/// Async: Schlüsselbund-Zugriffe und das Schließen einer laufenden
+/// IMAP-Session (wartet, bis deren Befehl fertig ist) blockieren sonst den
+/// UI-Thread — synchrone Tauri-Befehle laufen auf dem Hauptthread.
 #[tauri::command]
-pub fn save_account(st: State<'_, Shared>, input: AccountInput) -> Result<Account, String> {
+pub async fn save_account(st: State<'_, Shared>, input: AccountInput) -> Result<Account, String> {
+    let st = st.inner().clone();
+    blocking(move || do_save_account(&st, input)).await
+}
+
+pub(crate) fn do_save_account(st: &AppState, input: AccountInput) -> Result<Account, String> {
     let input = validate_input(input)?;
     let mut accounts = st.accounts.lock().unwrap();
     let existing = input.id.as_ref().and_then(|id| accounts.iter().find(|a| &a.id == id).cloned());
@@ -149,12 +157,20 @@ pub fn save_account(st: State<'_, Shared>, input: AccountInput) -> Result<Accoun
     if acc.name.trim().is_empty() {
         acc.name = acc.email.clone();
     }
+    let before = accounts.clone();
     if let Some(pos) = accounts.iter().position(|a| a.id == id) {
         accounts[pos] = acc.clone();
     } else {
         accounts.push(acc.clone());
     }
-    accounts::store(&st.config_dir, &accounts)?;
+    if let Err(e) = accounts::store(&st.config_dir, &accounts) {
+        // Speicher und Datei nicht auseinanderlaufen lassen.
+        *accounts = before;
+        if existing.is_none() && password.is_some() {
+            accounts::delete_password(&st.config_dir, &id);
+        }
+        return Err(format!("{}: {e}", tr("Konto nicht gespeichert", "Account not saved")));
+    }
     drop(accounts);
     // Neue Zugangsdaten → alte Session verwerfen.
     st.pool.drop_session(&id);
@@ -196,13 +212,29 @@ pub(crate) fn validate_input(mut input: AccountInput) -> Result<AccountInput, St
 }
 
 #[tauri::command]
-pub fn delete_account(st: State<'_, Shared>, account_id: String) -> Result<(), String> {
-    st.pool.drop_session(&account_id);
-    accounts::delete_password(&st.config_dir, &account_id);
-    let mut accounts = st.accounts.lock().unwrap();
-    accounts.retain(|a| a.id != account_id);
-    accounts::store(&st.config_dir, &accounts)?;
-    let _ = std::fs::remove_dir_all(cache_file(&st.cache_dir, &account_id, "x").parent().unwrap());
+pub async fn delete_account(st: State<'_, Shared>, account_id: String) -> Result<(), String> {
+    let st = st.inner().clone();
+    blocking(move || do_delete_account(&st, &account_id)).await
+}
+
+/// Erst aus der Liste nehmen (laufende und neue Befehle finden das Konto
+/// dann nicht mehr), dann die Session schließen — `drop_session` wartet auf
+/// einen gerade laufenden Befehl —, zuletzt Passwort und Cache löschen.
+pub(crate) fn do_delete_account(st: &AppState, account_id: &str) -> Result<(), String> {
+    {
+        let mut accounts = st.accounts.lock().unwrap();
+        let before = accounts.clone();
+        accounts.retain(|a| a.id != account_id);
+        if let Err(e) = accounts::store(&st.config_dir, &accounts) {
+            *accounts = before;
+            return Err(format!("{}: {e}", tr("Konto nicht entfernt", "Account not removed")));
+        }
+    }
+    st.pool.drop_session(account_id);
+    accounts::delete_password(&st.config_dir, account_id);
+    if let Some(dir) = cache_file(&st.cache_dir, account_id, "x").parent() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
     Ok(())
 }
 
@@ -668,8 +700,12 @@ pub async fn set_flag(
 
 fn do_move(s: &mut ImapSession, uids: &[u32], target: &str) -> imap::Result<()> {
     let set = uid_set(uids);
-    if s.uid_mv(&set, target).is_ok() {
-        return Ok(());
+    match s.uid_mv(&set, target) {
+        Ok(()) => return Ok(()),
+        // Nur „kann ich nicht“ (kein MOVE) fällt auf COPY zurück — nach einem
+        // Verbindungsfehler weiß niemand, ob das MOVE schon durch ist.
+        Err(imap::Error::No(_) | imap::Error::Bad(_)) => {}
+        Err(e) => return Err(e),
     }
     s.uid_copy(&set, quote(target))?;
     s.uid_store(&set, "+FLAGS.SILENT (\\Deleted)")?;
@@ -777,9 +813,45 @@ pub async fn save_attachment(
         let (raw, ..) = fetch_raw_or_err(&st, &account_id, &folder, uid)?;
         let bytes = mailbox_core::attachment_bytes(&raw, index)
             .ok_or_else(|| tr("Anhang nicht gefunden", "Attachment not found"))?;
-        std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", tr("Speichern fehlgeschlagen", "Saving failed")))
+        write_file_safely(std::path::Path::new(&path), &bytes)
     })
     .await
+}
+
+/// Datei erst neben dem Ziel schreiben, dann umbenennen: ein Abbruch
+/// hinterlässt nie eine halbe Datei unter dem gewählten Namen, und eine
+/// bestehende Datei bleibt bis zum Schluss heil. Die Umbenennung wiederholt
+/// kurz bei Windows-Sperren (Virenscanner, OneDrive).
+pub(crate) fn write_file_safely(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let fail = |e: std::io::Error| {
+        let hint = if accounts::is_transient_lock(e.raw_os_error()) && cfg!(windows) {
+            format!(
+                " — {}",
+                tr(
+                    "die Datei ist vermutlich in einem anderen Programm geöffnet",
+                    "the file is probably open in another program"
+                )
+            )
+        } else {
+            String::new()
+        };
+        format!("{}: {e}{hint}", tr("Speichern fehlgeschlagen", "Saving failed"))
+    };
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = path.with_file_name(format!(".{name}.mailbox-{}.part", std::process::id()));
+    let res = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        accounts::rename_retry(&tmp, path)
+    })();
+    if let Err(e) = res {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(fail(e));
+    }
+    Ok(())
 }
 
 // --- compose ----------------------------------------------------------------
@@ -912,7 +984,9 @@ pub fn data_path(st: State<'_, Shared>) -> String {
 #[tauri::command]
 pub async fn check_update(app: AppHandle) -> Result<Option<UpdateInfoDto>, String> {
     use tauri_plugin_updater::UpdaterExt;
-    let updater = app.updater().map_err(|e| e.to_string())?;
+    let updater = app
+        .updater()
+        .map_err(|e| format!("{}: {e}", tr("Update-Prüfung fehlgeschlagen", "Update check failed")))?;
     match updater.check().await {
         Ok(Some(update)) => Ok(Some(UpdateInfoDto {
             version: update.version.clone(),
@@ -927,7 +1001,9 @@ pub async fn check_update(app: AppHandle) -> Result<Option<UpdateInfoDto>, Strin
 #[tauri::command]
 pub async fn install_update(app: AppHandle) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
-    let updater = app.updater().map_err(|e| e.to_string())?;
+    let updater = app
+        .updater()
+        .map_err(|e| format!("{}: {e}", tr("Update fehlgeschlagen", "Update failed")))?;
     let update = updater
         .check()
         .await
@@ -942,3 +1018,62 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod e2e;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attachment_written_atomically_with_umlaut_path() {
+        let dir = std::env::temp_dir().join(format!("mailbox anhang Ä {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("Prüfung (final) & Co.pdf");
+        write_file_safely(&p, b"alt").unwrap();
+        write_file_safely(&p, b"neu").unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"neu");
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left.len(), 1, "Temp-Datei liegen geblieben: {left:?}");
+        // Ziel nicht schreibbar (Ordner) → Fehler mit Text, keine Reste.
+        let d = dir.join("ordner");
+        std::fs::create_dir_all(d.join("x")).unwrap();
+        let err = write_file_safely(&d, b"x").unwrap_err();
+        assert!(err.contains("Speichern fehlgeschlagen") || err.contains("Saving failed"), "{err}");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_account_removes_from_list_first() {
+        let dir = std::env::temp_dir().join(format!("mailbox-del-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let acc = Account {
+            id: "x1".into(),
+            name: "n".into(),
+            email: "a@b.de".into(),
+            imap_host: "h".into(),
+            imap_port: 993,
+            imap_security: mailbox_core::Security::Tls,
+            smtp_host: "h".into(),
+            smtp_port: 465,
+            smtp_security: mailbox_core::Security::Tls,
+            username: "a@b.de".into(),
+            signature: String::new(),
+            color: String::new(),
+            password_stored: "none".into(),
+        };
+        let st = AppState {
+            settings: std::sync::Mutex::new(Settings::default()),
+            accounts: std::sync::Mutex::new(vec![acc]),
+            config_dir: dir.clone(),
+            cache_dir: dir.join("cache"),
+            pool: crate::imap::SessionPool::default(),
+        };
+        let cache = cache_file(&st.cache_dir, "x1", "INBOX");
+        save_cache(&cache, &CachedPage::<u32> { total: 0, messages: vec![] }).unwrap();
+        do_delete_account(&st, "x1").unwrap();
+        assert!(st.account("x1").is_err());
+        assert!(!cache.exists());
+        assert!(accounts::load(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

@@ -35,6 +35,7 @@ export function SettingsModal({
   const [s, setS] = useState<Settings>({ ...settings });
   const [updState, setUpdState] = useState<'idle' | 'checking' | 'none' | 'error'>('idle');
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [updErr, setUpdErr] = useState('');
   const [installing, setInstalling] = useState(false);
   const [dataPath, setDataPath] = useState('');
   const [version, setVersion] = useState(APP_VERSION);
@@ -57,6 +58,7 @@ export function SettingsModal({
   const checkUpdates = () => {
     setUpdState('checking');
     setUpdate(null);
+    setUpdErr('');
     api
       .checkUpdate()
       .then((u) => {
@@ -65,7 +67,11 @@ export function SettingsModal({
           setUpdState('idle');
         } else setUpdState('none');
       })
-      .catch(() => setUpdState('error'));
+      .catch((e) => {
+        // Meldung vom Backend (in der App-Sprache), sonst die allgemeine.
+        setUpdErr(String(e ?? ''));
+        setUpdState('error');
+      });
   };
 
   const expert = s.mode === 'expert';
@@ -255,7 +261,11 @@ export function SettingsModal({
                 {updState === 'checking' ? t.checking : t.checkUpdates}
               </button>
               {updState === 'none' && <span>{t.upToDate}</span>}
-              {updState === 'error' && <span style={{ color: 'var(--red)' }}>{t.updateError}</span>}
+              {updState === 'error' && (
+                <span className="upd-err" style={{ color: 'var(--red)' }}>
+                  {updErr || t.updateError}
+                </span>
+              )}
               {update && (
                 <>
                   <span>
@@ -266,7 +276,12 @@ export function SettingsModal({
                     disabled={installing}
                     onClick={() => {
                       setInstalling(true);
-                      api.installUpdate().catch(() => setInstalling(false));
+                      setUpdErr('');
+                      api.installUpdate().catch((e) => {
+                        setInstalling(false);
+                        setUpdErr(String(e ?? ''));
+                        setUpdState('error');
+                      });
                     }}
                   >
                     {installing ? t.updateInstalling : t.installUpdate}

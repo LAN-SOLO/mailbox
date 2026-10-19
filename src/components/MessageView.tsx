@@ -146,9 +146,9 @@ export function MessageView({
 
   const saveAttachment = async (index: number, filename: string) => {
     if (!detail) return;
-    const path = await save({ defaultPath: filename });
-    if (!path) return;
     try {
+      const path = await save({ defaultPath: filename });
+      if (!path) return;
       await api.saveAttachment(detail.accountId, detail.folder, detail.uid, index, path);
       onToast(t.saved);
     } catch (e) {

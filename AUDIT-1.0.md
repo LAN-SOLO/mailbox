@@ -1,6 +1,6 @@
 # mailbox. 1.0 — Funktions- und Sicherheitsaudit
 
-Stand: 2026-10-19 · Basis: `0864694` (v0.1.0 + Hilfe-Sprachumschalter) · Ziel: Test-Build 1.0.0 für macOS und Windows.
+Stand: 2026-10-20 (Runde 2, § 7) · 2026-10-19 · Basis: `0864694` (v0.1.0 + Hilfe-Sprachumschalter) · Ziel: Test-Build 1.0.0 für macOS und Windows.
 
 Legende Teststatus:
 - **E2E** — automatisiert gegen einen echten IMAP/SMTP-Server (GreenMail 2.1.0 in Docker, `cargo test -p mailbox -- --ignored e2e`)
@@ -89,7 +89,7 @@ Legende Teststatus:
 | S8 | niedrig | Einstellungen ungeprüft vom Frontend übernommen. | behoben (`Settings::sanitized`) |
 | S9 | Info | Verschlüsselung „keine“ ist wählbar (für lokale Testserver). | belassen, Warnhinweis im Dialog |
 | S10 | niedrig | rustls 0.23.43 (RUSTSEC-2026-0285/0346/0348/0349), source-map-js 1.2.1 (GHSA-68fv-2mgg-jv7q, nur Build) | behoben (0.23.46 / 1.2.2) |
-| S11 | mittel (offen) | `imap 3.0.0-alpha.15` zieht `rustls-connector 0.19` → rustls 0.22.4 / rustls-webpki 0.102.8 (RUSTSEC-2026-0346/0349, -0049/0098/0099/0104). Kein kompatibles Update ohne Wechsel der IMAP-Bibliothek. Praktisch: keine CRLs im Einsatz (0104/0049 nicht erreichbar), Debug-Ausgaben von Sessions gibt es nicht (0346); Name-Constraint-Fehler (0098/0099) betreffen nur Zertifikate mit Name Constraints. | offen — Roadmap: IMAP-TLS selbst aufbauen (rustls 0.23) oder Bibliothek wechseln |
+| S11 | mittel | `imap 3.0.0-alpha.15` zog über das Feature `rustls-tls` `rustls-connector 0.19` → rustls 0.22.4 / rustls-webpki 0.102.8 (RUSTSEC-2026-0346/0349, -0049/0098/0099/0104). | **behoben in Runde 2** (§ 7): IMAP-TLS baut mailbox selbst mit rustls 0.23 (schon im Baum über lettre/reqwest); `cargo audit` meldet rustls 0.22/webpki 0.102 nicht mehr |
 | S12 | niedrig (offen) | `zip 4.6.1` im Updater (RUSTSEC-2026-0367/0368/0369). Entpackt werden nur signaturgeprüfte Update-Pakete; macOS nutzt tar.gz, Windows NSIS. Fix erst mit tauri-plugin-updater ≥ 2.14 (zieht Tauri-Upgrade nach sich). | offen — beim nächsten Tauri-Upgrade |
 
 Geprüft ohne Befund: TLS-Prüfung nirgends abgeschaltet (kein `danger_skip_tls_verify`, lettre `relay`/`starttls_relay`); Updater-Pubkey gesetzt, Endpoint https; IMAP-Strings über `validate_str`/eigene Quotierung ohne CR/LF; Suche quotiert; kein `dangerouslySetInnerHTML`; Markdown-Renderer escaped vor dem Einfügen und verlinkt nur http(s)/mailto (Tests); Vorschau-Iframe `sandbox=""`; localStorage nur für `mailbox.tutorialSeen`; Passwörter werden nirgends geloggt; Fehlermeldungen enthalten Host/Port, keine Zugangsdaten.
@@ -127,7 +127,7 @@ WebKit (macOS) folgt laut Spezifikation demselben Erbschaftsmodell — **manuell
 
 ## 4. Bekannte Grenzen
 
-- Keine Timeouts auf IMAP-Sockets (Bibliothek bietet keinen Zugriff); abgefangen wird der häufige Fall (Ruhezustand) über die Neuverbindung nach Leerlauf. Ein mitten im Befehl hängender Server blockiert das Konto, bis TCP aufgibt.
+- ~~Keine Timeouts auf IMAP-Sockets~~ — seit Runde 2 behoben (20 s Verbindungsaufbau, 100 s je Lese-/Schreiboperation; § 7). Eine Operation, die nach dem Timeout abbricht, wird nicht automatisch wiederholt (MOVE/APPEND sind nicht idempotent).
 - Ohne UIDPLUS fällt endgültiges Löschen auf `EXPUNGE` des ganzen Ordners zurück (entfernt alle dort mit \Deleted markierten Nachrichten).
 - Kein IDLE (Push), kein Threading-Ansicht, kein OAuth2 (große Anbieter brauchen App-Passwörter), kein PGP/S/MIME.
 - Beim Weiterleiten im Klartext gehen eingebettete (cid-)Bilder des Originals nicht mit; normale Anhänge schon.
@@ -185,6 +185,16 @@ Jeweils auf **macOS** (arm64 oder Intel) und **Windows 11** abhaken. Testkonto b
 
 **Updates**
 - [ ] „Nach Updates suchen“ meldet „Aktuell.“ bzw. findet ein höheres Release; Installation startet die App neu
+- [ ] Ohne Netz (WLAN aus) „Nach Updates suchen“ → rote Meldung in der App-Sprache (nicht stumm)
+- [ ] Update-Hinweis beim Start sitzt unten links und verschwindet, solange ein Dialog offen ist
+
+**Runde 2 (Verbindung & Dateien)**
+- [ ] macOS und Windows: Konto bei Gmail/GMX/Outlook (993/TLS) und einem Anbieter mit 143/STARTTLS verbinden — „Verbindung testen“ OK (eigene TLS-Schicht, System-Zertifikatsspeicher)
+- [ ] Firmen-/Proxy-Zertifizierungsstelle (falls vorhanden) im System installiert → Verbindung klappt; selbst signiertes Zertifikat (z. B. GreenMail 3993) → „TLS-Fehler“
+- [ ] Hängender Server: nach Login das Netz kappen (Kabel/WLAN), „Abrufen“ → nach ≤ 100 s „Zeitüberschreitung“, die App bleibt bedienbar; Netz wieder an, „Abrufen“ → Liste kommt
+- [ ] Windows: Anhang als PDF speichern, PDF im Acrobat offen lassen, erneut unter **demselben** Namen speichern → Meldung „… vermutlich in einem anderen Programm geöffnet“; nach Schließen klappt es; keine `.part`-Reste im Ordner
+- [ ] Windows: Speicherort in OneDrive-Ordner mit Umlaut im Pfad → Datei vollständig, keine `.part`-Reste
+- [ ] Konto entfernen, während eine Liste lädt → App friert nicht ein, Konto verschwindet
 
 ## 6. Verifikation (zweiter, unabhängiger Prüfer, 2026-10-19)
 
@@ -231,3 +241,63 @@ Handbuch (DE/EN) ergänzt: Suche findet Umlaute; Vorab-Verbindungen und eingebet
 - Umlaut-Suche auf Servern ohne LITERAL+/LITERAL- hängt weiter von deren Nachsicht bei 8-Bit-Quoted-Strings ab.
 - Native Dialoge, Schlüsselbund, Updater, WebKit-Verhalten der CSP und der Link-Entschärfung: nur auf echter Hardware prüfbar (Checkliste oben).
 
+
+## 7. Runde 2 (2026-10-20)
+
+Basis: `aa1a93c`. Ziel: Reste aus Runde 1 im Code beheben (nicht nur dokumentieren) und die Fehlerbilder L1–L13 aus den anderen Apps gegen mailbox prüfen. „Getestet“ heißt hier: selbst ausgeführt.
+
+### 7.1 Behoben
+
+| # | Schwere | Befund | Behebung / Nachweis |
+|---|---|---|---|
+| R1 | mittel (Sicherheit) | S11: rustls 0.22 / webpki 0.102 mit offenen RUSTSEC-Meldungen über `imap`-Feature `rustls-tls` | IMAP-TLS in `src-tauri/src/imap.rs` selbst: rustls 0.23 (ring), Wurzeln aus dem System (`rustls-native-certs`) + `webpki-roots`, Zertifikats-/Namensprüfung immer an. STARTTLS von Hand: Begrüßung und Antwort Byte für Byte, ohne `OK` kein Klartext-Weiter. Alle drei Crates standen schon in `Cargo.lock` (lettre/reqwest) und werden nur direkt genutzt. `cargo audit`: nur noch S12 (zip) + „unmaintained“. Tests: `starttls_refused_never_falls_back_to_plaintext`, `starttls_injected_plaintext_breaks_handshake` (nach dem OK eingeschleuster Klartext landet im Handshake und scheitert), `bad_starttls_greeting_rejected`, `e2e_tls_self_signed_rejected` (GreenMail 3993), `net_tls_public_servers` (imap.gmail.com:993, imap.gmx.net:143 STARTTLS, badssl falscher Name / selbst signiert) — alle grün. |
+| R2 | mittel (L8/L9) | Kein Timeout auf IMAP-Sockets: ein mitten im Befehl schweigender Server hing das Konto auf, bis TCP aufgab | 20 s Verbindungsaufbau je Adresse (IPv6/IPv4), 100 s Lese-/Schreib-Timeout je Socket-Operation; Meldung „Zeitüberschreitung — der Server antwortet nicht (100 s)“ DE/EN. Session wird nach jedem Verbindungs-/Protokollfehler verworfen (vorher blieb sie nach dem zweiten Fehlversuch im Pool); nach Timeout **keine** automatische Wiederholung. Test `silent_server_times_out_instead_of_hanging` (TLS und Klartext, < 2 s bei 300 ms Limit). |
+| R3 | niedrig (Datenintegrität) | Verschieben fiel nach *jedem* MOVE-Fehler auf COPY+EXPUNGE zurück — auch nach Verbindungsabbruch, wenn das MOVE schon durch sein konnte | Rückfall nur noch bei `NO`/`BAD` (Server kann kein MOVE); E2E-Verschieben grün. |
+| R4 | mittel (L8/L9) | `save_account`/`delete_account` waren synchrone Befehle (laufen auf dem Hauptthread) — Schlüsselbund-Zugriff und `drop_session` (wartet auf einen laufenden IMAP-Befehl, bis zu 100 s) froren das Fenster ein | Beide async über `spawn_blocking`. Löschen nimmt das Konto zuerst aus der Liste (neue Befehle finden es nicht mehr), dann Session, Passwort, Cache. Fehlgeschlagenes Speichern von `accounts.json` rollt den Speicherstand zurück (und entfernt ein gerade angelegtes Schlüsselbund-Passwort). Test `delete_account_removes_from_list_first`. |
+| R5 | mittel (L5) | Windows: `rename` beim atomaren Schreiben (Einstellungen, Konten, Zugangsdaten) scheitert, wenn Virenscanner/OneDrive die frische Datei kurz offen halten; Anhang speichern schrieb direkt in die Zieldatei (halbe Datei bei Abbruch, kaputte Altdatei) | `accounts::rename_retry`: bis zu 12 Wiederholungen (≈ 2 s) bei Fehler 5/32/33, nur auf Windows. Anhänge: erst `.<name>.mailbox-<pid>.part` daneben, `sync_all`, dann umbenennen; bei Fehler wird die Temp-Datei entfernt, unter Windows mit Hinweis „vermutlich in einem anderen Programm geöffnet“. Tests `write_atomic_replaces_and_cleans_up`, `attachment_written_atomically_with_umlaut_path` (Pfad mit Umlaut, Leerzeichen, `&`), `transient_lock_codes`. Die Wiederholung selbst ist auf macOS nicht auslösbar → manuell (Checkliste). |
+| R6 | mittel (L11/L13) | Update-Installation scheiterte stumm (Banner und Einstellungen setzten nur den Knopf zurück); Prüf-Fehler zeigten nur „Update-Prüfung fehlgeschlagen“ ohne Grund; `app.updater()`-Fehler kamen roh englisch | Meldung des Backends (in der App-Sprache vorangestellt) als Toast bzw. rot in Einstellungen → App; Knopf wieder bedienbar. UI-Sweep prüft beides in DE/EN. Versionsvergleich/Endpoint/Pubkey unverändert geprüft (semver gegen 1.0.0, GitHub `latest.json`, Minisign-Schlüssel gesetzt). |
+| R7 | niedrig (L9) | Schnelles Weiterklicken in der Liste: eine langsamere ältere `get_message`-Antwort überschrieb die zuletzt geklickte Nachricht | Anfrage-Zähler wie bei der Liste; UI-Test „fast clicking shows the last message“. |
+| R8 | niedrig (L7) | `<meta http-equiv=refresh>` in HTML-Mails: Chromium sperrt die Weiterleitung im Sandbox-Rahmen (gemessen: 0 Verbindungen), WebKit nicht automatisiert geprüft | `http-equiv` in Meta-Tags der Mail wird zu `data-http-equiv` (unsere CSP-Meta bleibt erstes Element). Leck-Experiment mit Zähl-Socket über 24 Vektoren (Bild, srcset/picture, CSS-Hintergrund/@import/@font-face, video/audio/poster/track, input type=image, SVG image/use, base, a ping, form, link preconnect/prefetch, iframe/object, refresh, dns-prefetch-Schalter): **0 Verbindungen** mit Sperre; Positivkontrolle ohne Verpackung 9 Treffer. Test in `scripts/mailhtml.test.ts`. |
+| R9 | niedrig (L1) | Kein automatischer Schutz gegen Rückfall auf `window.confirm`; der Dev-Mock beantwortete `window.confirm` noch synchron (hätte den Fehler aus 0.1 verdeckt) | `scripts/dialogs.test.ts` (in `pnpm test`): kein `window.confirm/alert/prompt` außerhalb des Rückfalls in `dialog.ts`, `dialog.ts` wartet auf plugin `confirm`, Capability erlaubt `message`. Dev-Mock bildet plugin-dialog 2.7 nach (Stubs liefern Promises, Rückfragen nur über `plugin:dialog\|message`). Probeweise eingebautes `if (window.confirm(…))` wird erkannt. |
+| R10 | niedrig (Layout) | Bei 900×580 (Mindestgröße): lange Fehlermeldungen liefen als Toast links und rechts aus dem Fenster; der Update-Hinweis oben mittig verdeckte Modus-Umschalter, Suche und „Neue Nachricht“ und lag über offenen Dialogen; Passwortfeld im Konto-Dialog ungestylt (weiß, schmal — im Dunkel-Modus auffällig) | Toast bricht um (max. Fensterbreite − 32 px, Text markierbar); Banner unten links, ausgeblendet solange ein Dialog offen ist; Passwort/E-Mail/Suche-Felder wie Textfelder. Alles im UI-Sweep geprüft. |
+| R12 | niedrig (L5) | Entschärfte Anhangsnamen erkannten Windows-Gerätenamen nur exakt: „NUL .txt“, „COM¹.log“, „CONOUT$“ gingen durch | `safe_filename` (core): Stamm ohne Leerzeichen am Ende, COM/LPT mit 0–9 und ¹²³, CONIN$/CONOUT$; „COM10“/„Console“ bleiben. Test `filenames_are_defused`. |
+| R11 | niedrig (L11) | Fehler der nativen Datei-Dialoge (Anhang wählen/speichern) liefen als unbehandelte Promise ins Leere | abgefangen und angezeigt. |
+
+### 7.2 L1–L13 für mailbox
+
+| | Ergebnis |
+|---|---|
+| L1 | Rückfragen seit Runde 1 über plugin `confirm` mit `await`; jetzt zusätzlich Wächter-Test und Mock nach Plugin-Verhalten (R9). Kein `alert`/`prompt` (Ordnername über eigenen Dialog). |
+| L2 | Backend-Meldungen über `lang::tr` (folgt der App-Sprache, gesetzt beim Start und bei jedem Speichern der Einstellungen); neue Meldungen (Timeout, TLS, STARTTLS, Speichern, Updater) zweisprachig. OS-Fehlertexte (`os error 32` …) bleiben in der Sprache des Systems, mit übersetztem Vorspann. |
+| L3 | Erststart-Sprache aus `sys-locale` — nutzt auf macOS `CFLocaleCopyPreferredLanguages`, auf Windows `GetUserPreferredUILanguages`, nicht `LANG` (Quelltext 0.3.2 geprüft) → kein Befund. |
+| L4 | Kein CSV-/JSON-Import oder -Export in mailbox → entfällt. |
+| L5 | R5, R12. Fremde Anhangsnamen werden im Backend entschärft (`mailbox_core::safe_filename`, seit Runde 1: `\ / : * ? " < > \|`, Steuerzeichen, Bidi, reservierte Namen — in Runde 2 erweitert (R12) —, Länge). Lange Pfade: Rust-`std` setzt unter Windows bei Bedarf `\\?\`. |
+| L6 | Kürzel über `platformKeys` (⌘ auf macOS, Strg/Ctrl sonst); Hilfe nennt beide. Kein hartkodiertes „Ctrl“ gefunden. |
+| L7 | R8 (Runde 1: V1). |
+| L8 | Alle Netzwerk-Befehle async/`spawn_blocking`; R2, R4. |
+| L9 | R2, R4, R7; Editor sperrt Verwerfen während des Sendens (`busy`). |
+| L10 | Daten als RFC 3339 mit Offset aus Date-Header bzw. INTERNALDATE, Anzeige in Ortszeit über `toLocale*`; Sammel-Posteingang sortiert numerisch. Keine Datumswähler/Wochen. Kein Befund. |
+| L11 | R6, R11; Rückfragen siehe L1. |
+| L12 | UI-Sweep: keine Texte der jeweils anderen Sprache in 13 Ansichten × DE/EN × dunkel/hell (ganze Wörter, inkl. Tooltips/Platzhalter). Handbuch DE+EN ergänzt (Neu in 1.0, Updates, Wenn etwas klemmt, externe Inhalte). |
+| L13 | R6. |
+
+### 7.3 Selbst ausgeführt
+
+| Prüfung | Ergebnis |
+|---|---|
+| `cargo test --workspace` | mailbox 20 + 5 ignoriert, core 18 — grün |
+| `cargo test -p mailbox -- --ignored` gegen GreenMail 2.1.0 (Docker, 13025/13143/13993) + Netz | 5/5 (4 E2E inkl. neu `e2e_tls_self_signed_rejected`, `net_tls_public_servers`) |
+| `cargo clippy --workspace --all-targets` | 0 Warnungen |
+| Windows-Typecheck `cargo check --target x86_64-pc-windows-msvc --workspace --tests` (vom Mac, ohne Linken) | grün |
+| `cargo audit` | nur S12 (zip 4.6.1, Windows-Updater; kein 4.x-Fix, erst zip ≥ 9 über updater ≥ 2.14) + „unmaintained“ |
+| `pnpm build`, `pnpm test` | grün; 31 Prüfungen (Markdown, Mail-HTML, Dialog-Wächter) |
+| `scripts/ui-smoke/ui.mjs` | 38/38, 0 Konsolenfehler (mit dem strengeren Mock) |
+| `scripts/ui-smoke/sweep.mjs` (neu) | 141/141 — DE/EN × dunkel/hell bei 900×580: Handbuch, Liste, HTML-Mail, Editor (Experte), alle Einstellungs-Reiter, Konto-Dialog, Update-Fehler (Prüfen/Installieren/Banner), langer Fehler-Toast, Ordner löschen mit Abbrechen, schnelles Weiterklicken |
+| Leck-Experiment HTML-Mail (Chromium, Zähl-Socket, App-CSP als Header) | 24 Vektoren → 0 Verbindungen; Positivkontrolle 9 |
+
+### 7.4 Offen / nur auf echter Hardware prüfbar
+
+- S12 (zip im Windows-Updater) bleibt bis zum nächsten Tauri-/Updater-Upgrade.
+- Ohne UIDPLUS: endgültiges Löschen und Entwurf ersetzen per `EXPUNGE` des ganzen Ordners (unverändert).
+- Listen-Cache (Betreff/Absender der ersten Seite) unverschlüsselt im Cache-Ordner (unverändert, bewusst).
+- Echte WebViews (WKWebView/WebView2): CSP-Erbschaft, Bilder laden, Link-/Meta-Entschärfung; native Dialoge (Abbrechen bricht ab); Schlüsselbund/Credential Manager; signierter Updater-Download und Neustart; Windows-Sperren beim Umbenennen (Virenscanner, OneDrive, offene Datei); Firmen-CAs aus dem Systemspeicher; Timeout bei gekapptem Netz auf echter Hardware; Ruhezustand. → Checkliste § 5, Abschnitt „Runde 2“.

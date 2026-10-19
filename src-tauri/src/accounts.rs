@@ -117,7 +117,35 @@ pub fn write_atomic(path: &Path, data: &[u8], private: bool) -> std::io::Result<
     f.write_all(data)?;
     f.sync_all()?;
     drop(f);
-    std::fs::rename(&tmp, path)
+    if let Err(e) = rename_retry(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Umbenennen mit kurzen Wiederholungen: Auf Windows halten Virenscanner,
+/// OneDrive oder der Indexdienst eine frisch geschriebene Datei oft für
+/// Millisekunden offen — `MoveFileEx` scheitert dann mit „Zugriff
+/// verweigert“ (5) oder einer Freigabeverletzung (32/33). Gesamt höchstens
+/// rund 2 s; andere Fehler (und alle auf macOS/Linux) sofort.
+pub fn rename_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut attempt = 0u64;
+    loop {
+        match std::fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(e) if cfg!(windows) && attempt < 12 && is_transient_lock(e.raw_os_error()) => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(25 * attempt));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Windows-Fehlercodes, die nur „gerade gesperrt“ bedeuten.
+pub fn is_transient_lock(code: Option<i32>) -> bool {
+    matches!(code, Some(5) | Some(32) | Some(33))
 }
 
 // --- Passwörter -----------------------------------------------------------
@@ -215,6 +243,30 @@ mod tests {
             let mode = std::fs::metadata(credentials_path(&dir)).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn transient_lock_codes() {
+        // ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
+        assert!(is_transient_lock(Some(5)) && is_transient_lock(Some(32)) && is_transient_lock(Some(33)));
+        assert!(!is_transient_lock(Some(2)) && !is_transient_lock(None));
+    }
+
+    #[test]
+    fn write_atomic_replaces_and_cleans_up() {
+        let dir = std::env::temp_dir().join(format!("mailbox-atomic Ü {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("Prüfung & Co.json");
+        write_atomic(&p, b"eins", false).unwrap();
+        write_atomic(&p, b"zwei", false).unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"zwei");
+        assert!(!p.with_extension("json.tmp").exists());
+        // Ziel ist ein Ordner → Fehler, und keine Temp-Datei bleibt liegen.
+        let d = dir.join("ordner.json");
+        std::fs::create_dir_all(d.join("x")).unwrap();
+        assert!(write_atomic(&d, b"x", false).is_err());
+        assert!(!d.with_extension("json.tmp").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -92,7 +92,7 @@ button.ghost:hover { color: var(--text); background: var(--bg-raised); }
 button.icon { padding: 4px 7px; line-height: 1; }
 button.active { border-color: var(--blue-dim); color: var(--blue); }
 
-input[type='text'], input[type='number'], input[type='date'], textarea, select {
+input[type='text'], input[type='password'], input[type='email'], input[type='search'], input[type='number'], input[type='date'], textarea, select {
   font: inherit;
   width: 100%;
   color: var(--text);
@@ -214,6 +214,8 @@ html[data-theme='light'] .note.warn { color: #b45309; }
   flex-wrap: wrap;
 }
 
+.updatebox .upd-err { flex-basis: 100%; overflow-wrap: anywhere; }
+
 .modal.settings { width: 640px; }
 .set-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
 /* toast */
@@ -231,6 +233,12 @@ html[data-theme='light'] .note.warn { color: #b45309; }
   z-index: 100;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   animation: toast-in 0.15s ease-out;
+  /* lange Fehlermeldungen (Host, Server-Antwort) umbrechen statt aus dem Fenster laufen */
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
 }
 @keyframes toast-in {
   from { opacity: 0; transform: translateX(-50%) translateY(8px); }
@@ -687,11 +695,14 @@ html[data-theme='dark'] .readbody iframe, .readbody iframe { background: #ffffff
 .hlp-content h2 { font-size: 16px; margin: 0 0 14px; }
 
 /* update banner (startup auto-check) */
+/* unten links: oben in der Mitte verdeckte er bei kleinem Fenster Modus-
+   Umschalter, Suche und „Neue Nachricht“ (1.0, Runde 2) */
 .upd-banner {
   position: fixed;
-  top: 14px;
-  left: 50%;
-  transform: translateX(-50%);
+  bottom: 16px;
+  left: 16px;
+  max-width: calc(100vw - 96px);
+  flex-wrap: wrap;
   display: flex;
   align-items: center;
   gap: 10px;

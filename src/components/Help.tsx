@@ -119,6 +119,8 @@ const de: Content = {
         '• „Externe Bilder laden“ funktioniert, die Sperre davor ist dichter; mailto:-Links öffnen eine neue Nachricht.',
         '• Ordner mit Umlauten, Server-Suche nach Umlauten, strengere Adressprüfung beim Senden, entschärfte Anhangsnamen, automatische Neuverbindung nach Ruhezustand.',
         '• Fehlermeldungen des Hintergrunds folgen der eingestellten Sprache.',
+        '• Zeitlimit für IMAP: Ein Server, der nicht mehr antwortet, blockiert das Konto nicht mehr — nach 100 s meldet mailbox „Zeitüberschreitung“. Zertifikate prüft mailbox gegen den Zertifikatsspeicher des Systems (Firmen-Zertifizierungsstellen funktionieren) und die Mozilla-Liste.',
+        '• Update-Fehler werden angezeigt statt verschluckt; der Update-Hinweis sitzt unten links und verdeckt keine Knöpfe mehr.',
       ],
     },
     {
@@ -172,7 +174,7 @@ const de: Content = {
       title: 'Lesen',
       body: [
         'Beim Öffnen wird eine Nachricht als gelesen markiert (abschaltbar). Über der Nachricht: Antworten, Allen antworten, Weiterleiten, Archivieren, ungelesen, Stern, Löschen.',
-        '• HTML-Mails laufen in einem abgeschotteten Rahmen ohne Skripte; externe Bilder, Vorab-Verbindungen und eingebettete Fremdinhalte sind blockiert, bis Sie „Externe Bilder laden“ klicken (Letztere bleiben immer gesperrt). Web-Links öffnen sich im Browser, mailto:-Links als neue Nachricht in mailbox.',
+        '• HTML-Mails laufen in einem abgeschotteten Rahmen ohne Skripte; externe Bilder, Vorab-Verbindungen, automatische Weiterleitungen und eingebettete Fremdinhalte sind blockiert, bis Sie „Externe Bilder laden“ klicken (alles außer Bildern bleibt immer gesperrt). Web-Links öffnen sich im Browser, mailto:-Links als neue Nachricht in mailbox.',
         '• „Text / HTML“ schaltet um, wenn die Nachricht beide Fassungen enthält.',
         '• Anhänge: Klick auf die Schaltfläche → Speicherort wählen. Eingebettete Bilder werden direkt angezeigt. Dateinamen aus fremden Mails werden entschärft (kein Pfad, keine unter Windows/macOS unzulässigen Zeichen).',
         '• Experte: „Header“ zeigt alle Kopfzeilen, „Quelltext“ die rohe Nachricht — praktisch bei Zustellproblemen und Phishing-Verdacht.',
@@ -253,7 +255,8 @@ const de: Content = {
       id: 'updates',
       title: 'Updates',
       body: [
-        'mailbox prüft beim Start still auf neue Versionen und zeigt einen Hinweis. Mit Auto-Update wird direkt installiert.',
+        'mailbox prüft beim Start still auf neue Versionen und zeigt unten links einen Hinweis (nicht, solange ein Dialog offen ist). Mit Auto-Update wird direkt installiert.',
+        'Schlägt die Prüfung (Einstellungen → App) oder die Installation fehl, zeigt mailbox die Meldung des Updaters an — meist fehlt die Internetverbindung; einfach später erneut versuchen.',
         'Updates sind signiert — die App installiert nur Pakete, deren Signatur zum eingebauten Schlüssel passt.',
       ],
     },
@@ -267,6 +270,8 @@ const de: Content = {
         '• Linux ohne Secret Service (GNOME Keyring/KWallet): Passwort wird in einer Datei im App-Ordner gespeichert — der Konto-Dialog weist darauf hin.',
         '• Liste bleibt leer: „Abrufen“ klicken; bei Verbindungsabbruch verbindet mailbox beim nächsten Befehl neu. Nach Ruhezustand oder WLAN-Wechsel (mehr als 4 Minuten Pause) baut mailbox die Verbindung von sich aus frisch auf.',
         '• Gesendet-Kopie fehlt: Der Server kennzeichnet keinen Gesendet-Ordner — im Expertenmodus einen Ordner „Sent“ anlegen.',
+        '• „Zeitüberschreitung — der Server antwortet nicht“: Der Server hat 100 s lang nichts geschickt. mailbox bricht ab, statt zu hängen; „Abrufen“ versucht es mit einer neuen Verbindung.',
+        '• Anhang speichern scheitert unter Windows mit Hinweis auf ein anderes Programm: Die Datei ist dort noch geöffnet (z. B. im PDF-Betrachter) — schließen oder einen anderen Namen wählen. Eine vorhandene Datei wird erst ersetzt, wenn der neue Inhalt vollständig geschrieben ist.',
       ],
     },
   ],
@@ -357,6 +362,8 @@ const en: Content = {
         '• “Load remote images” works, and the block before it is tighter; mailto: links open a new message.',
         '• Folders with accents, server search for accented words, stricter address check when sending, defused attachment names, automatic reconnect after sleep.',
         '• Background error messages follow the selected language.',
+        '• Time limit for IMAP: a server that stops responding no longer blocks the account — after 100 s mailbox reports “Timeout”. Certificates are checked against the system certificate store (company CAs work) and the Mozilla list.',
+        '• Update errors are shown instead of swallowed; the update banner sits at the bottom left and no longer covers buttons.',
       ],
     },
     {
@@ -410,7 +417,7 @@ const en: Content = {
       title: 'Reading',
       body: [
         'Opening a message marks it as read (can be turned off). Above the message: Reply, Reply all, Forward, Archive, Unread, Star, Delete.',
-        '• HTML mail runs in an isolated frame without scripts; remote images, preconnects and embedded third-party content are blocked until you click “Load remote images” (the latter always stay blocked). Web links open in your browser, mailto: links as a new message in mailbox.',
+        '• HTML mail runs in an isolated frame without scripts; remote images, preconnects, automatic redirects and embedded third-party content are blocked until you click “Load remote images” (everything except images always stays blocked). Web links open in your browser, mailto: links as a new message in mailbox.',
         '• “Text / HTML” toggles when the message contains both versions.',
         '• Attachments: click the button → choose a location. Embedded images are shown inline. File names from foreign mail are defused (no path, no characters invalid on Windows/macOS).',
         '• Expert: “Headers” shows all header lines, “Source” the raw message — handy for delivery issues and suspected phishing.',
@@ -491,7 +498,8 @@ const en: Content = {
       id: 'updates',
       title: 'Updates',
       body: [
-        'mailbox silently checks for new versions on launch and shows a banner. With auto-update it installs right away.',
+        'mailbox silently checks for new versions on launch and shows a banner at the bottom left (not while a dialog is open). With auto-update it installs right away.',
+        'If the check (Settings → App) or the installation fails, mailbox shows the updater’s message — usually the internet connection is missing; just try again later.',
         'Updates are signed — the app only installs packages whose signature matches the built-in key.',
       ],
     },
@@ -505,6 +513,8 @@ const en: Content = {
         '• Linux without Secret Service (GNOME Keyring/KWallet): the password is stored in a file in the app folder — the account dialog points this out.',
         '• List stays empty: click “Refresh”; after a dropped connection mailbox reconnects on the next command. After sleep or a Wi-Fi change (more than 4 minutes idle) mailbox opens a fresh connection on its own.',
         '• Sent copy missing: the server does not flag a Sent folder — create a folder “Sent” in expert mode.',
+        '• “Timeout — the server does not respond”: the server sent nothing for 100 s. mailbox gives up instead of hanging; “Refresh” tries again with a new connection.',
+        '• Saving an attachment fails on Windows with a hint about another program: the file is still open there (e.g. in a PDF viewer) — close it or choose another name. An existing file is only replaced once the new content has been written completely.',
       ],
     },
   ],

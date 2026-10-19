@@ -124,7 +124,13 @@ export function Compose({
   });
 
   const pick = async () => {
-    const picked = await open({ multiple: true });
+    let picked: string | string[] | null;
+    try {
+      picked = await open({ multiple: true });
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
     if (!picked) return;
     const list = Array.isArray(picked) ? picked : [picked];
     setAttachments((a) => [...a, ...list.filter((p) => !a.includes(p))]);

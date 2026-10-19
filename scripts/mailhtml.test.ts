@@ -16,4 +16,8 @@ ok('no <link> survives', !/<link[\s/>]/i.test(blocked), blocked);
 ok('no frame/object/embed survives', !/<\/?(iframe|frame|object|embed)[\s/>]/i.test(blocked), blocked);
 ok('text and links kept', blocked.includes('<p>Text <a href="https://tracker.example/x">Link</a></p>'));
 ok('lookalike tags untouched', wrapHtml('<linked>x</linked><embedded>', false).includes('<linked>x</linked><embedded>'));
+const refresh = wrapHtml(`<META HTTP-EQUIV="refresh" content="0;url=${T}/r"><meta content="0;url=${T}/r2" http-equiv = 'Refresh'><p>http-equiv=x im Text</p>`, false);
+ok('mail http-equiv (refresh) defused', !/<meta[^>]*\shttp-equiv\s*=\s*["']?refresh/i.test(refresh) && (refresh.match(/data-http-equiv/g) ?? []).length === 2, refresh);
+ok('own CSP meta untouched', refresh.startsWith('<!doctype html><meta http-equiv="Content-Security-Policy"'));
+ok('text mentioning http-equiv untouched', refresh.includes('<p>http-equiv=x im Text</p>'));
 if (fail) { console.log(fail, 'failures'); process.exit(1); }

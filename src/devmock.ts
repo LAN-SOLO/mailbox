@@ -9,10 +9,12 @@ import type {
   Settings,
 } from './api';
 
+// URL-Parameter für UI-Durchläufe: ?mock&lang=en&theme=light&mode=expert
+const q = new URLSearchParams(location.search);
 const settings: Settings = {
-  language: 'de',
-  mode: (localStorage.getItem('mock.mode') as Settings['mode']) || 'simple',
-  theme: 'dark',
+  language: q.get('lang') === 'en' ? 'en' : 'de',
+  mode: (q.get('mode') as Settings['mode']) || (localStorage.getItem('mock.mode') as Settings['mode']) || 'simple',
+  theme: q.get('theme') === 'light' ? 'light' : 'dark',
   accent: 'blue',
   autoUpdate: false,
   loadRemoteImages: false,
@@ -161,7 +163,9 @@ const handlers: Record<string, (a: Args) => unknown> = {
   test_account: () => ({ imap: 'OK — imap.example.org:993 (TLS, 12 Capabilities)', smtp: 'OK — smtp.example.org:587 (STARTTLS)' }),
   list_folders: () => folders,
   create_folder: () => undefined,
-  delete_folder: () => undefined,
+  delete_folder: (a) => {
+    (window as unknown as Record<string, unknown>).__lastDeleteFolder = a;
+  },
   list_messages: (a) => {
     const src = a.folder === 'INBOX' ? messages : a.folder === 'Drafts' ? drafts : [];
     return {
@@ -191,14 +195,6 @@ const handlers: Record<string, (a: Args) => unknown> = {
     (window as unknown as Record<string, unknown>).__lastDraft = a.draft;
     console.log('[mock] save_draft', JSON.stringify(a.draft));
   },
-  // Rückfragen (plugin-dialog confirm/ask laufen über „message“): Browser-Dialog
-  'plugin:dialog|message': (a) => {
-    const b = a.buttons as { OkCancelCustom?: [string, string] } | string | undefined;
-    const [ok, cancel] = typeof b === 'object' && b?.OkCancelCustom ? b.OkCancelCustom : ['Ok', 'Cancel'];
-    const yes = window.confirm(String(a.message));
-    (window as unknown as Record<string, unknown>).__lastConfirm = { message: a.message, yes };
-    return yes ? ok : cancel;
-  },
   'plugin:app|version': () => '1.0.0',
   'plugin:dialog|open': () => ['/Users/mock/Documents/Bericht.pdf'],
   'plugin:dialog|save': (a) => `/Users/mock/Downloads/${(a.options as { defaultPath?: string })?.defaultPath ?? 'x'}`,
@@ -206,12 +202,32 @@ const handlers: Record<string, (a: Args) => unknown> = {
     (window as unknown as Record<string, unknown>).__lastOpened = a.url;
   },
   data_path: () => '/Users/mock/Library/Application Support/com.lan-solo.mailbox',
-  check_update: () => null,
+  check_update: () => (q.has('update') ? { version: '1.0.1', notes: 'mock', date: null } : null),
   install_update: () => undefined,
+};
+
+// Wie plugin-dialog 2.7 im echten WebView: window.confirm/alert/prompt sind
+// async Stubs auf nicht registrierte Befehle (Promise → immer „wahr“, nie ein
+// Dialog). Ein Rückfall auf window.confirm im App-Code fällt so im UI-Test auf
+// (Löschen trotz „Abbrechen“). Rückfragen laufen nur über „plugin:dialog|message“.
+const nativeConfirm = window.confirm.bind(window);
+const w = window as unknown as Record<string, unknown>;
+for (const k of ['confirm', 'alert', 'prompt']) {
+  w[k] = () => Promise.reject(`mock: plugin:dialog|${k} not found (wie plugin-dialog 2.7)`);
+}
+handlers['plugin:dialog|message'] = (a) => {
+  const b = a.buttons as { OkCancelCustom?: [string, string] } | string | undefined;
+  const [ok, cancel] = typeof b === 'object' && b?.OkCancelCustom ? b.OkCancelCustom : ['Ok', 'Cancel'];
+  const yes = nativeConfirm(String(a.message));
+  w.__lastConfirm = { message: a.message, yes };
+  return yes ? ok : cancel;
 };
 
 (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
   invoke: (cmd: string, args: Args = {}) => {
+    // Fehlerfälle für UI-Tests: window.__mockFail = { kommando: 'Meldung' }
+    const failMsg = (w.__mockFail as Record<string, string> | undefined)?.[cmd];
+    if (failMsg) return new Promise((_, rej) => setTimeout(() => rej(failMsg), 60));
     const h = handlers[cmd];
     if (!h) return Promise.reject(`mock: unbekanntes Kommando ${cmd}`);
     return new Promise((res) => setTimeout(() => res(h(args)), 60));
