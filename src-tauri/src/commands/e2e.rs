@@ -348,3 +348,115 @@ fn account_validation() {
     input.email = "kein-at".into();
     assert!(validate_input(input).is_err());
 }
+
+/// Verifikation 1.0 (zweiter Prüfer): Umlaute in Ordnern, Betreffs und
+/// Anhangspfaden, große Anhänge, Suche nach Umlauten, Senden aus einem
+/// Umlaut-Ordner heraus.
+#[test]
+#[ignore]
+fn e2e_verify_unicode_and_big() {
+    let st = state(vec![account("t", "test"), account("a", "anna")]);
+    let run = format!("{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+
+    // Lokaler Anhang: 12 MB, Pfad mit Leerzeichen und Umlauten
+    let dir = std::env::temp_dir().join(format!("mailbox e2e Ärger {run}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("Größe & Preis (final).bin");
+    let big: Vec<u8> = (0..12 * 1024 * 1024u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
+    std::fs::write(&file, &big).unwrap();
+
+    let subject = format!("Grüße mit Übergröße {run}");
+    let d = Draft {
+        account_id: "a".into(),
+        to: "Test Ümlaut <test@lan-solo.test>".into(),
+        subject: subject.clone(),
+        body: "Anbei — groß.".into(),
+        attachments: vec![file.to_string_lossy().to_string()],
+        ..Default::default()
+    };
+    do_send(&st, &d).unwrap();
+    let inbox = list(&st, "t", "INBOX");
+    let m = inbox.iter().find(|x| x.subject == subject).expect("big mail delivered").clone();
+    assert!(m.has_attachments);
+    let (raw, ..) = fetch_raw_or_err(&st, "t", "INBOX", m.uid).unwrap();
+    let p = parse_message(&raw).unwrap();
+    let att = p.attachments.iter().find(|a| a.filename == "Größe & Preis (final).bin").expect("unicode filename kept");
+    assert_eq!(mailbox_core::attachment_bytes(&raw, att.index).unwrap(), big);
+
+    // Suche nach Umlaut im Betreff
+    let hits = do_search(&st, "t", "INBOX", &format!("Übergröße {run}"), "subject").unwrap();
+    assert!(hits.iter().any(|h| h.uid == m.uid), "umlaut subject search");
+    let hits = do_search(&st, "t", "INBOX", &run, "all").unwrap();
+    assert!(hits.iter().any(|h| h.uid == m.uid), "search all scopes");
+    assert!(do_search(&st, "t", "INBOX", "   ", "all").unwrap().is_empty());
+    // Ohne LITERAL+: 8-Bit-Quoted-String — darf zumindest nicht scheitern
+    st.pool
+        .with(&st, "t", |s| {
+            s.select("INBOX")?;
+            s.uid_search(search_criteria("subject", &format!("Übergröße {run}"), false))
+        })
+        .unwrap();
+    // Verbindung danach weiter nutzbar
+    assert!(!do_list(&st, "t", "INBOX", 0, 5, true).unwrap().messages.is_empty());
+
+    // In einen Umlaut-Ordner verschieben, dort listen und von dort weiterleiten
+    let fname = format!("Rechnungen äöü {run}");
+    do_create_folder(&st, "t", &fname).unwrap();
+    let folders = st.pool.with(&st, "t", |s| fetch_folders(s, false)).unwrap();
+    let enc = folders.iter().find(|f| f.display == fname).expect("folder").name.clone();
+    st.pool.with(&st, "t", |s| { s.select("INBOX")?; s.uid_mv(m.uid.to_string(), &enc) }).unwrap();
+    let page = do_list(&st, "t", &enc, 0, 50, true).unwrap();
+    assert_eq!(page.total, 1);
+    let moved = page.messages[0].clone();
+    let fwd_subject = format!("WG: {subject}");
+    do_send(&st, &Draft {
+        account_id: "t".into(),
+        to: "anna@lan-solo.test".into(),
+        subject: fwd_subject.clone(),
+        server_attachments: Some(ServerAttachments { account_id: Some("t".into()), folder: enc.clone(), uid: moved.uid, indices: vec![att.index] }),
+        ..Default::default()
+    })
+    .unwrap();
+    let got = list(&st, "a", "INBOX").into_iter().find(|x| x.subject == fwd_subject).expect("forward from umlaut folder");
+    let (raw2, ..) = fetch_raw_or_err(&st, "a", "INBOX", got.uid).unwrap();
+    let p2 = parse_message(&raw2).unwrap();
+    let a2 = p2.attachments.iter().find(|a| a.filename.starts_with("Größe")).expect("forwarded big attachment");
+    assert_eq!(mailbox_core::attachment_bytes(&raw2, a2.index).unwrap().len(), big.len());
+
+    // Ungültiger Anhangsindex → Fehler, nichts verschickt
+    let err = do_send(&st, &Draft {
+        account_id: "t".into(),
+        to: "anna@lan-solo.test".into(),
+        subject: "nie".into(),
+        server_attachments: Some(ServerAttachments { account_id: None, folder: enc.clone(), uid: moved.uid, indices: vec![999] }),
+        ..Default::default()
+    })
+    .unwrap_err();
+    assert!(!err.is_empty());
+    // Fehlender lokaler Anhang → Fehler mit Pfad
+    let err = do_send(&st, &Draft {
+        account_id: "t".into(),
+        to: "anna@lan-solo.test".into(),
+        attachments: vec![dir.join("weg.pdf").to_string_lossy().to_string()],
+        ..Default::default()
+    })
+    .unwrap_err();
+    assert!(err.contains("weg.pdf"), "{err}");
+
+    // Umlaut-Ordner löschen (Name wie vom Server geliefert)
+    st.pool.with(&st, "t", |s| { let _ = s.examine("INBOX"); s.delete(&enc) }).unwrap();
+    let folders = st.pool.with(&st, "t", |s| fetch_folders(s, false)).unwrap();
+    assert!(folders.iter().all(|f| f.display != fname));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Ohne Server: Suchkriterien — ASCII als Quoted String, Umlaute als Literal.
+#[test]
+fn search_criteria_literals() {
+    assert_eq!(search_criteria("subject", "Rechnung \"Q4\"", true), "SUBJECT \"Rechnung \\\"Q4\\\"\"");
+    assert_eq!(search_criteria("from", "Grüße", true), "CHARSET UTF-8 FROM {7+}\r\nGrüße");
+    assert_eq!(search_criteria("body", "Grüße", false), "CHARSET UTF-8 TEXT \"Grüße\"");
+    assert_eq!(search_criteria("to", "a\r\nb", true), "TO \"ab\"");
+    assert!(search_criteria("all", "ä", true).starts_with("CHARSET UTF-8 OR OR OR SUBJECT {2+}\r\nä FROM"));
+}

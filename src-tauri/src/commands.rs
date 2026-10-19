@@ -480,6 +480,38 @@ fn imap_quoted(q: &str) -> String {
     format!("\"{}\"", cleaned.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// Suchbegriff als IMAP-String. Quoted Strings dürfen laut RFC 3501 nur
+/// 7-Bit enthalten — Umlaute in Anführungszeichen findet ein strikter
+/// Server (z. B. GreenMail, im Test nachgewiesen) schlicht nicht. Nicht-ASCII
+/// geht deshalb als nicht-synchrones Literal `{n+}` (LITERAL+/LITERAL-,
+/// RFC 7888 — Gmail, Outlook, Dovecot, GreenMail). Synchrone Literale kann
+/// die imap-Bibliothek für SEARCH nicht; ohne LITERAL+ bleibt es beim
+/// 8-Bit-Quoted-String, den nachsichtige Server akzeptieren.
+fn imap_search_string(q: &str, literal_plus: bool) -> String {
+    let cleaned: String = q.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+    if cleaned.is_ascii() || !literal_plus {
+        return imap_quoted(&cleaned);
+    }
+    format!("{{{}+}}\r\n{cleaned}", cleaned.len())
+}
+
+/// Suchkriterien je Suchbereich (Betreff, Absender, Empfänger, Text, alles).
+fn search_criteria(scope: &str, q: &str, literal_plus: bool) -> String {
+    let qq = imap_search_string(q, literal_plus);
+    let c = match scope {
+        "subject" => format!("SUBJECT {qq}"),
+        "from" => format!("FROM {qq}"),
+        "to" => format!("TO {qq}"),
+        "body" => format!("TEXT {qq}"),
+        _ => format!("OR OR OR SUBJECT {qq} FROM {qq} TO {qq} TEXT {qq}"),
+    };
+    if q.is_ascii() {
+        c
+    } else {
+        format!("CHARSET UTF-8 {c}")
+    }
+}
+
 #[tauri::command]
 pub async fn search_messages(
     st: State<'_, Shared>,
@@ -489,37 +521,38 @@ pub async fn search_messages(
     scope: String,
 ) -> Result<Vec<MessageSummary>, String> {
     let st = st.inner().clone();
-    blocking(move || {
-        let q = query.trim();
-        if q.is_empty() {
+    blocking(move || do_search(&st, &account_id, &folder, &query, &scope)).await
+}
+
+pub(crate) fn do_search(
+    st: &AppState,
+    account_id: &str,
+    folder: &str,
+    query: &str,
+    scope: &str,
+) -> Result<Vec<MessageSummary>, String> {
+    let q = query.trim();
+    if q.is_empty() {
+        return Ok(vec![]);
+    }
+    // Suchbegriffe sind kurz; überlange Eingaben kappen (auch für LITERAL-).
+    let q: String = q.chars().take(1000).collect();
+    st.pool.with(st, account_id, |s| {
+        let literal_plus = s
+            .capabilities()
+            .map(|c| c.has_str("LITERAL+") || c.has_str("LITERAL-"))
+            .unwrap_or(false);
+        s.select(folder)?;
+        let uids = s.uid_search(search_criteria(scope, &q, literal_plus))?;
+        let mut uids: Vec<u32> = uids.into_iter().collect();
+        uids.sort_unstable_by(|a, b| b.cmp(a));
+        uids.truncate(200);
+        if uids.is_empty() {
             return Ok(vec![]);
         }
-        let qq = imap_quoted(q);
-        let criteria = match scope.as_str() {
-            "subject" => format!("SUBJECT {qq}"),
-            "from" => format!("FROM {qq}"),
-            "to" => format!("TO {qq}"),
-            "body" => format!("TEXT {qq}"),
-            _ => format!("OR OR OR SUBJECT {qq} FROM {qq} TO {qq} TEXT {qq}"),
-        };
-        st.pool.with(&st, &account_id, |s| {
-            s.select(&folder)?;
-            // Erst UTF-8 (moderne Server), dann ohne CHARSET.
-            let uids = match s.uid_search(format!("CHARSET UTF-8 {criteria}")) {
-                Ok(u) => u,
-                Err(_) => s.uid_search(&criteria)?,
-            };
-            let mut uids: Vec<u32> = uids.into_iter().collect();
-            uids.sort_unstable_by(|a, b| b.cmp(a));
-            uids.truncate(200);
-            if uids.is_empty() {
-                return Ok(vec![]);
-            }
-            let fetches = s.uid_fetch(uid_set(&uids), SUMMARY_QUERY)?;
-            Ok(summaries_from_fetches(&fetches, &account_id, &folder))
-        })
+        let fetches = s.uid_fetch(uid_set(&uids), SUMMARY_QUERY)?;
+        Ok(summaries_from_fetches(&fetches, account_id, folder))
     })
-    .await
 }
 
 type RawMessage = (Vec<u8>, Vec<Flag<'static>>, u32, Option<String>);
