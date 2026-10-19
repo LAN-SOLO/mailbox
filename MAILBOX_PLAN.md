@@ -42,5 +42,8 @@ Uppercase-Mono-Labels, `//`-Hinweiszeilen). DE/EN, signierte In-App-Updates.
 - 0.1: Konten (Presets + Test), Ordner, Liste, Lesen (Text/HTML sandboxed),
   Flags, Löschen/Verschieben, Verfassen/Antworten/Weiterleiten mit Anhängen,
   Gesendet-Kopie, Entwürfe, Suche, beide Modi, Handbuch, Updater.
-- 0.2: IMAP IDLE (Push), Offline-Cache der Bodies, Threading, Filter/Regeln.
+- 1.0 (2026-10): Audit — echte Rückfragen, Remote-Bilder-Sperre, Esc-Verhalten,
+  Weiterleiten mit Anhängen, Entwürfe fortsetzen, UTF-7-Ordner, Adressprüfung,
+  Neuverbindung nach Ruhezustand, DE/EN-Backend-Meldungen (`AUDIT-1.0.md`).
+- danach: IMAP IDLE (Push), Offline-Cache der Bodies, Threading, Filter/Regeln.
 - 0.3: OAuth2 für große Anbieter, PGP/S/MIME, Kontakte-Autovervollständigung.

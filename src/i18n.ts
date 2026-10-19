@@ -460,4 +460,22 @@ const en: Dict = {
   error: 'Error',
 };
 
-export const dicts: Record<Lang, Dict> = { de, en };
+const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
+
+/** Tastenkürzel in Texten für die Plattform: ⌘ auf macOS, Strg/Ctrl sonst. */
+export function platformKeys(text: string, lang: Lang): string {
+  if (IS_MAC) return text;
+  const ctrl = lang === 'de' ? 'Strg' : 'Ctrl';
+  return text
+    .replace(/⌘⇧/g, `${ctrl}+Shift+`)
+    .replace(/⌘⏎/g, `${ctrl}+Enter`)
+    .replace(/⌘/g, `${ctrl}+`);
+}
+
+function forPlatform(d: Dict, lang: Lang): Dict {
+  const out = { ...d } as Record<string, unknown>;
+  for (const [k, v] of Object.entries(out)) if (typeof v === 'string') out[k] = platformKeys(v, lang);
+  return out as Dict;
+}
+
+export const dicts: Record<Lang, Dict> = { de: forPlatform(de, 'de'), en: forPlatform(en, 'en') };
