@@ -21,7 +21,14 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 base64 = "0.22"
-imap = { version = "3.0.0-alpha.15", default-features = false, features = ["rustls-tls"] }
+# Ohne TLS-Feature: TLS baut mailbox selbst (src/imap.rs, rustls 0.23 mit
+# Socket-Timeouts) — das Feature „rustls-tls“ zog rustls 0.22 / webpki 0.102
+# mit offenen RUSTSEC-Meldungen und erlaubte keine Timeouts.
+imap = { version = "3.0.0-alpha.15", default-features = false }
+# Schon im Abhängigkeitsbaum (lettre, reqwest) — hier nur direkt genutzt.
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12", "logging"] }
+rustls-native-certs = "0.8"
+webpki-roots = "1"
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "rustls-tls"] }
 mail-parser = "0.11"
 imap-proto = "0.16"

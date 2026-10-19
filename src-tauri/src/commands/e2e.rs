@@ -460,3 +460,14 @@ fn search_criteria_literals() {
     assert_eq!(search_criteria("to", "a\r\nb", true), "TO \"ab\"");
     assert!(search_criteria("all", "ä", true).starts_with("CHARSET UTF-8 OR OR OR SUBJECT {2+}\r\nä FROM"));
 }
+
+/// IMAPS mit dem selbst signierten Zertifikat von GreenMail (Port 3993 bzw.
+/// MAILBOX_E2E_IMAPS_PORT): die eigene TLS-Schicht (seit 1.0, Runde 2) muss
+/// ablehnen — Zertifikatsprüfung ist nie abschaltbar.
+#[test]
+#[ignore]
+fn e2e_tls_self_signed_rejected() {
+    let p = port("MAILBOX_E2E_IMAPS_PORT", 3993);
+    let err = crate::imap::open("localhost", p, Security::Tls).expect_err("selbst signiert darf nicht verbinden");
+    assert!(err.contains("TLS"), "{err}");
+}
