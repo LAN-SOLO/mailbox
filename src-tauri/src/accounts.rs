@@ -29,7 +29,9 @@ pub struct Account {
     pub password_stored: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// Kein `Debug`: die Struktur trägt das Klartext-Passwort und soll nie in
+/// einem Log oder einer Panic-Meldung landen.
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountInput {
     #[serde(default)]
