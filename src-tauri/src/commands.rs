@@ -1,12 +1,13 @@
 use crate::accounts::{self, Account, AccountInput};
+use crate::lang::{self, tr};
 use crate::imap::ImapSession;
 use crate::settings::{self, Settings};
-use crate::smtp::{self, Draft};
+use crate::smtp::{self, Draft, ExtraAttachment, MessageRef, ServerAttachments};
 use crate::state::AppState;
 use imap::types::Flag;
 use imap_proto::{BodyStructure, NameAttribute};
 use mailbox_core::{
-    cache_file, decode_utf7, detect_role, load_cache, parse_message, parse_summary_headers,
+    cache_file, decode_utf7, detect_role, encode_utf7, load_cache, parse_message, parse_summary_headers,
     role_rank, save_cache, Address, Attachment, CachedPage, FolderRole, ServerGuess,
 };
 use serde::{Deserialize, Serialize};
@@ -94,11 +95,12 @@ async fn blocking<T: Send + 'static>(
 ) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(f)
         .await
-        .map_err(|e| format!("Hintergrund-Task abgebrochen: {e}"))?
+        .map_err(|e| format!("{}: {e}", tr("Hintergrund-Task abgebrochen", "Background task aborted")))?
 }
 
 fn quote(name: &str) -> String {
-    format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
+    let cleaned: String = name.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+    format!("\"{}\"", cleaned.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 fn uid_set(uids: &[u32]) -> String {
@@ -113,9 +115,12 @@ pub fn get_settings(st: State<'_, Shared>) -> Settings {
 }
 
 #[tauri::command]
-pub fn set_settings(app: AppHandle, st: State<'_, Shared>, settings: Settings) {
-    settings::store(&app, &settings);
-    *st.settings.lock().unwrap() = settings;
+pub fn set_settings(app: AppHandle, st: State<'_, Shared>, settings: Settings) -> Result<(), String> {
+    let settings = settings.sanitized();
+    lang::set(&settings.language);
+    *st.settings.lock().unwrap() = settings.clone();
+    settings::store(&app, &settings)
+        .map_err(|e| format!("{}: {e}", tr("Einstellungen nicht gespeichert", "Settings not saved")))
 }
 
 // --- accounts ---------------------------------------------------------------
@@ -127,12 +132,7 @@ pub fn list_accounts(st: State<'_, Shared>) -> Vec<Account> {
 
 #[tauri::command]
 pub fn save_account(st: State<'_, Shared>, input: AccountInput) -> Result<Account, String> {
-    if input.email.trim().is_empty() || !input.email.contains('@') {
-        return Err("Bitte eine gültige E-Mail-Adresse angeben.".into());
-    }
-    if input.imap_host.trim().is_empty() || input.smtp_host.trim().is_empty() {
-        return Err("IMAP- und SMTP-Server sind Pflichtfelder.".into());
-    }
+    let input = validate_input(input)?;
     let mut accounts = st.accounts.lock().unwrap();
     let existing = input.id.as_ref().and_then(|id| accounts.iter().find(|a| &a.id == id).cloned());
     let id = existing
@@ -145,13 +145,7 @@ pub fn save_account(st: State<'_, Shared>, input: AccountInput) -> Result<Accoun
         (None, Some(e)) => e.password_stored.clone(),
         (None, None) => "none".into(),
     };
-    let mut username = input.username.trim().to_string();
-    if username.is_empty() {
-        username = input.email.trim().to_string();
-    }
     let mut acc = input.into_account(id.clone(), stored);
-    acc.username = username;
-    acc.email = acc.email.trim().to_string();
     if acc.name.trim().is_empty() {
         acc.name = acc.email.clone();
     }
@@ -165,6 +159,40 @@ pub fn save_account(st: State<'_, Shared>, input: AccountInput) -> Result<Accoun
     // Neue Zugangsdaten → alte Session verwerfen.
     st.pool.drop_session(&id);
     Ok(acc)
+}
+
+/// Eingaben des Konto-Dialogs prüfen und normalisieren (getrimmt,
+/// Benutzername = Adresse, wenn leer). Hostnamen ohne Leerzeichen/Schema,
+/// Ports 1–65535.
+pub(crate) fn validate_input(mut input: AccountInput) -> Result<AccountInput, String> {
+    input.email = input.email.trim().to_string();
+    input.name = input.name.trim().to_string();
+    input.imap_host = input.imap_host.trim().to_string();
+    input.smtp_host = input.smtp_host.trim().to_string();
+    input.username = input.username.trim().to_string();
+    if input.username.is_empty() {
+        input.username = input.email.clone();
+    }
+    match mailbox_core::parse_addresses_strict(&input.email) {
+        Ok(list) if list.len() == 1 && list[0].email == input.email => {}
+        _ => return Err(tr("Bitte eine gültige E-Mail-Adresse angeben.", "Please enter a valid e-mail address.")),
+    }
+    for host in [&input.imap_host, &input.smtp_host] {
+        if host.is_empty() {
+            return Err(tr("IMAP- und SMTP-Server sind Pflichtfelder.", "IMAP and SMTP server are required."));
+        }
+        if host.contains(|c: char| c.is_whitespace() || c.is_control() || matches!(c, '/' | '@' | '\\')) {
+            return Err(format!(
+                "{} „{host}“ — {}",
+                tr("Ungültiger Servername", "Invalid server name"),
+                tr("nur der Hostname, z. B. imap.example.org", "host name only, e.g. imap.example.org")
+            ));
+        }
+    }
+    if input.imap_port == 0 || input.smtp_port == 0 {
+        return Err(tr("Ports müssen zwischen 1 und 65535 liegen.", "Ports must be between 1 and 65535."));
+    }
+    Ok(input)
 }
 
 #[tauri::command]
@@ -187,18 +215,16 @@ pub fn guess_servers(email: String) -> Option<ServerGuess> {
 pub async fn test_account(st: State<'_, Shared>, input: AccountInput) -> Result<TestResult, String> {
     let st = st.inner().clone();
     blocking(move || {
+        let input = validate_input(input)?;
         let existing = input.id.as_ref().and_then(|id| st.account(id).ok());
         let password = match input.password.clone().filter(|p| !p.is_empty()) {
             Some(p) => p,
             None => match &existing {
                 Some(e) => accounts::get_password(&st.config_dir, e)?,
-                None => return Err("Bitte ein Passwort eingeben.".into()),
+                None => return Err(tr("Bitte ein Passwort eingeben.", "Please enter a password.")),
             },
         };
-        let mut acc = input.into_account("probe".into(), "none".into());
-        if acc.username.trim().is_empty() {
-            acc.username = acc.email.clone();
-        }
+        let acc = input.into_account("probe".into(), "none".into());
         let imap = {
             let mut session = crate::imap::connect(&acc, &password)?;
             let caps = session.capabilities().map(|c| c.iter().count()).unwrap_or(0);
@@ -309,7 +335,18 @@ pub async fn list_folders(
 #[tauri::command]
 pub async fn create_folder(st: State<'_, Shared>, account_id: String, name: String) -> Result<(), String> {
     let st = st.inner().clone();
-    blocking(move || st.pool.with(&st, &account_id, |s| s.create(&name))).await
+    blocking(move || do_create_folder(&st, &account_id, &name)).await
+}
+
+/// Ordnernamen kommen als Unicode aus der UI und gehen als Modified-UTF-7
+/// an den Server („Entwürfe“ → „Entw&APw-rfe“).
+pub(crate) fn do_create_folder(st: &AppState, account_id: &str, name: &str) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() || name.contains(['\r', '\n']) {
+        return Err(tr("Bitte einen Ordnernamen angeben.", "Please enter a folder name."));
+    }
+    let encoded = encode_utf7(name);
+    st.pool.with(st, account_id, |s| s.create(&encoded))
 }
 
 #[tauri::command]
@@ -393,16 +430,27 @@ pub async fn list_messages(
     refresh: bool,
 ) -> Result<MessagePage, String> {
     let st = st.inner().clone();
-    blocking(move || {
-        let cache_path = cache_file(&st.cache_dir, &account_id, &folder);
+    blocking(move || do_list(&st, &account_id, &folder, offset, limit, refresh)).await
+}
+
+pub(crate) fn do_list(
+    st: &AppState,
+    account_id: &str,
+    folder: &str,
+    offset: u32,
+    limit: u32,
+    refresh: bool,
+) -> Result<MessagePage, String> {
+    {
+        let cache_path = cache_file(&st.cache_dir, account_id, folder);
         if !refresh && offset == 0 {
             if let Some(page) = load_cache::<MessageSummary>(&cache_path) {
                 return Ok(MessagePage { messages: page.messages, total: page.total, from_cache: true });
             }
         }
         let limit = limit.clamp(1, 500);
-        let page = st.pool.with(&st, &account_id, |s| {
-            let mb = s.select(&folder)?;
+        let page = st.pool.with(st, account_id, |s| {
+            let mb = s.select(folder)?;
             let total = mb.exists;
             if total == 0 || offset >= total {
                 return Ok(MessagePage { messages: vec![], total, from_cache: false });
@@ -411,7 +459,7 @@ pub async fn list_messages(
             let start = end.saturating_sub(limit - 1).max(1);
             let fetches = s.fetch(format!("{start}:{end}"), SUMMARY_QUERY)?;
             Ok(MessagePage {
-                messages: summaries_from_fetches(&fetches, &account_id, &folder),
+                messages: summaries_from_fetches(&fetches, account_id, folder),
                 total,
                 from_cache: false,
             })
@@ -423,8 +471,7 @@ pub async fn list_messages(
             );
         }
         Ok(page)
-    })
-    .await
+    }
 }
 
 fn imap_quoted(q: &str) -> String {
@@ -491,7 +538,12 @@ fn fetch_raw(s: &mut ImapSession, folder: &str, uid: u32) -> imap::Result<Option
 fn fetch_raw_or_err(st: &AppState, account_id: &str, folder: &str, uid: u32) -> Result<RawMessage, String> {
     st.pool
         .with(st, account_id, |s| fetch_raw(s, folder, uid))?
-        .ok_or_else(|| "Nachricht nicht gefunden — vielleicht wurde sie inzwischen verschoben.".to_string())
+        .ok_or_else(|| {
+            tr(
+                "Nachricht nicht gefunden — vielleicht wurde sie inzwischen verschoben.",
+                "Message not found — it may have been moved in the meantime.",
+            )
+        })
 }
 
 #[tauri::command]
@@ -504,7 +556,7 @@ pub async fn get_message(
     let st = st.inner().clone();
     blocking(move || {
         let (raw, flags, size, internal) = fetch_raw_or_err(&st, &account_id, &folder, uid)?;
-        let p = parse_message(&raw).ok_or("Nachricht konnte nicht gelesen werden")?;
+        let p = parse_message(&raw).ok_or_else(|| tr("Nachricht konnte nicht gelesen werden", "Message could not be parsed"))?;
         Ok(MessageDetail {
             summary: MessageSummary {
                 uid,
@@ -569,7 +621,7 @@ pub async fn set_flag(
             "seen" => "\\Seen",
             "flagged" => "\\Flagged",
             "answered" => "\\Answered",
-            other => return Err(format!("Unbekanntes Flag: {other}")),
+            other => return Err(format!("{}: {other}", tr("Unbekanntes Flag", "Unknown flag"))),
         };
         let op = if value { "+FLAGS.SILENT" } else { "-FLAGS.SILENT" };
         st.pool.with(&st, &account_id, |s| {
@@ -623,11 +675,17 @@ pub async fn delete_messages(
     uids: Vec<u32>,
 ) -> Result<(), String> {
     let st = st.inner().clone();
-    blocking(move || {
+    blocking(move || do_delete(&st, &account_id, &folder, &uids)).await
+}
+
+/// In den Papierkorb verschieben — im Papierkorb selbst (oder ohne
+/// Papierkorb) endgültig löschen.
+pub(crate) fn do_delete(st: &AppState, account_id: &str, folder: &str, uids: &[u32]) -> Result<(), String> {
+    {
         if uids.is_empty() {
             return Ok(());
         }
-        st.pool.with(&st, &account_id, |s| {
+        st.pool.with(st, account_id, |s| {
             let folders = fetch_folders(s, false)?;
             let current_role = folders
                 .iter()
@@ -635,21 +693,24 @@ pub async fn delete_messages(
                 .map(|f| f.role)
                 .unwrap_or(FolderRole::Other);
             let trash = find_role(&folders, FolderRole::Trash);
-            s.select(&folder)?;
+            s.select(folder)?;
             match (current_role, trash) {
-                (FolderRole::Trash, _) | (_, None) => {
-                    let set = uid_set(&uids);
-                    s.uid_store(&set, "+FLAGS.SILENT (\\Deleted)")?;
-                    if s.uid_expunge(&set).is_err() {
-                        s.expunge()?;
-                    }
-                    Ok(())
-                }
-                (_, Some(trash)) => do_move(s, &uids, &trash),
+                (FolderRole::Trash, _) | (_, None) => expunge_uids(s, uids),
+                (_, Some(trash)) => do_move(s, uids, &trash),
             }
         })
-    })
-    .await
+    }
+}
+
+/// \Deleted setzen und genau diese UIDs entfernen (UIDPLUS); ohne UIDPLUS
+/// bleibt nur EXPUNGE auf den ganzen Ordner.
+fn expunge_uids(s: &mut ImapSession, uids: &[u32]) -> imap::Result<()> {
+    let set = uid_set(uids);
+    s.uid_store(&set, "+FLAGS.SILENT (\\Deleted)")?;
+    if s.uid_expunge(&set).is_err() {
+        s.expunge()?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -681,8 +742,9 @@ pub async fn save_attachment(
     let st = st.inner().clone();
     blocking(move || {
         let (raw, ..) = fetch_raw_or_err(&st, &account_id, &folder, uid)?;
-        let bytes = mailbox_core::attachment_bytes(&raw, index).ok_or("Anhang nicht gefunden")?;
-        std::fs::write(&path, bytes).map_err(|e| format!("Speichern fehlgeschlagen: {e}"))
+        let bytes = mailbox_core::attachment_bytes(&raw, index)
+            .ok_or_else(|| tr("Anhang nicht gefunden", "Attachment not found"))?;
+        std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", tr("Speichern fehlgeschlagen", "Saving failed")))
     })
     .await
 }
@@ -714,38 +776,95 @@ fn append_to_role(
     })
 }
 
+/// Anhänge einer Nachricht auf dem Server laden (Weiterleiten mit Anhängen,
+/// Entwurf fortsetzen). Dateinamen sind bereits entschärft (core).
+pub(crate) fn load_server_attachments(
+    st: &AppState,
+    account_id: &str,
+    src: &ServerAttachments,
+) -> Result<Vec<ExtraAttachment>, String> {
+    if src.indices.is_empty() {
+        return Ok(vec![]);
+    }
+    let (raw, ..) = fetch_raw_or_err(st, account_id, &src.folder, src.uid)?;
+    let parsed = parse_message(&raw).ok_or_else(|| tr("Nachricht konnte nicht gelesen werden", "Message could not be parsed"))?;
+    let mut out = Vec::new();
+    for &i in &src.indices {
+        let meta = parsed
+            .attachments
+            .iter()
+            .find(|a| a.index == i)
+            .ok_or_else(|| tr("Anhang nicht gefunden", "Attachment not found"))?;
+        let bytes = mailbox_core::attachment_bytes(&raw, i)
+            .ok_or_else(|| tr("Anhang nicht gefunden", "Attachment not found"))?;
+        out.push(ExtraAttachment { filename: meta.filename.clone(), mime: meta.mime.clone(), bytes });
+    }
+    Ok(out)
+}
+
+/// Alten Entwurf entfernen, nachdem er ersetzt (gespeichert/gesendet) wurde.
+/// Nur Nachrichten mit \Draft-Flag — ein falscher Verweis löscht so keine
+/// gewöhnliche Mail.
+fn remove_draft(st: &AppState, account_id: &str, r: &MessageRef) -> Result<(), String> {
+    st.pool.with(st, account_id, |s| {
+        s.select(&r.folder)?;
+        let fetches = s.uid_fetch(r.uid.to_string(), "(UID FLAGS)")?;
+        let is_draft = fetches.iter().any(|f| f.flags().contains(&Flag::Draft));
+        if !is_draft {
+            return Ok(());
+        }
+        expunge_uids(s, &[r.uid])
+    })
+}
+
+pub(crate) fn do_send(st: &AppState, draft: &Draft) -> Result<(), String> {
+    let acc = st.account(&draft.account_id)?;
+    let any = |f: &str| !mailbox_core::parse_addresses(f).is_empty();
+    if !any(&draft.to) && !any(&draft.cc) && !any(&draft.bcc) {
+        return Err(tr("Bitte mindestens einen Empfänger angeben.", "Please enter at least one recipient."));
+    }
+    let extra = match &draft.server_attachments {
+        Some(src) => load_server_attachments(st, &acc.id, src)?,
+        None => vec![],
+    };
+    let msg = smtp::build_message(&acc, draft, &extra, true)?;
+    let password = accounts::get_password(&st.config_dir, &acc)?;
+    let bytes = smtp::send(&acc, &password, &msg)?;
+    // Kopie in „Gesendet“ und alten Entwurf aufräumen — Fehler hier sind
+    // kein Versandfehler (die Mail ist raus).
+    let _ = append_to_role(st, &acc.id, FolderRole::Sent, None, &bytes, vec![Flag::Seen]);
+    if let Some(r) = &draft.replaces_draft {
+        let _ = remove_draft(st, &acc.id, r);
+    }
+    Ok(())
+}
+
+pub(crate) fn do_save_draft(st: &AppState, draft: &Draft) -> Result<(), String> {
+    let acc = st.account(&draft.account_id)?;
+    let extra = match &draft.server_attachments {
+        Some(src) => load_server_attachments(st, &acc.id, src)?,
+        None => vec![],
+    };
+    let msg = smtp::build_message(&acc, draft, &extra, false)?;
+    let bytes = msg.formatted();
+    append_to_role(st, &acc.id, FolderRole::Drafts, Some("Drafts"), &bytes, vec![Flag::Seen, Flag::Draft])?;
+    // Erst nach erfolgreichem Speichern den Vorgänger entfernen.
+    if let Some(r) = &draft.replaces_draft {
+        let _ = remove_draft(st, &acc.id, r);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn send_message(st: State<'_, Shared>, draft: Draft) -> Result<(), String> {
     let st = st.inner().clone();
-    blocking(move || {
-        let acc = st.account(&draft.account_id)?;
-        if mailbox_core::parse_addresses(&draft.to).is_empty()
-            && mailbox_core::parse_addresses(&draft.cc).is_empty()
-            && mailbox_core::parse_addresses(&draft.bcc).is_empty()
-        {
-            return Err("Bitte mindestens einen Empfänger angeben.".into());
-        }
-        let msg = smtp::build_message(&acc, &draft)?;
-        let password = accounts::get_password(&st.config_dir, &acc)?;
-        let bytes = smtp::send(&acc, &password, &msg)?;
-        // Kopie in „Gesendet“ — Fehler hier sind kein Versandfehler.
-        let _ = append_to_role(&st, &acc.id, FolderRole::Sent, None, &bytes, vec![Flag::Seen]);
-        Ok(())
-    })
-    .await
+    blocking(move || do_send(&st, &draft)).await
 }
 
 #[tauri::command]
 pub async fn save_draft(st: State<'_, Shared>, draft: Draft) -> Result<(), String> {
     let st = st.inner().clone();
-    blocking(move || {
-        let acc = st.account(&draft.account_id)?;
-        let msg = smtp::build_message(&acc, &draft)?;
-        let bytes = msg.formatted();
-        append_to_role(&st, &acc.id, FolderRole::Drafts, Some("Drafts"), &bytes, vec![Flag::Seen, Flag::Draft])?;
-        Ok(())
-    })
-    .await
+    blocking(move || do_save_draft(&st, &draft)).await
 }
 
 // --- misc -------------------------------------------------------------------
@@ -766,7 +885,7 @@ pub async fn check_update(app: AppHandle) -> Result<Option<UpdateInfoDto>, Strin
             date: update.date.map(|d| d.to_string()),
         })),
         Ok(None) => Ok(None),
-        Err(e) => Err(format!("Update-Prüfung fehlgeschlagen: {e}")),
+        Err(e) => Err(format!("{}: {e}", tr("Update-Prüfung fehlgeschlagen", "Update check failed"))),
     }
 }
 
@@ -777,12 +896,12 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
     let update = updater
         .check()
         .await
-        .map_err(|e| format!("Update-Prüfung fehlgeschlagen: {e}"))?
-        .ok_or("Kein Update verfügbar")?;
+        .map_err(|e| format!("{}: {e}", tr("Update-Prüfung fehlgeschlagen", "Update check failed")))?
+        .ok_or_else(|| tr("Kein Update verfügbar", "No update available"))?;
     update
         .download_and_install(|_, _| {}, || {})
         .await
-        .map_err(|e| format!("Update fehlgeschlagen: {e}"))?;
+        .map_err(|e| format!("{}: {e}", tr("Update fehlgeschlagen", "Update failed")))?;
     app.restart();
 }
 

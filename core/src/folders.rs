@@ -113,6 +113,51 @@ pub fn decode_utf7(name: &str) -> String {
     out
 }
 
+/// Kodiert einen Ordnernamen für den Server in Modified-UTF-7
+/// (RFC 3501 §5.1.3): druckbares ASCII bleibt, `&` wird `&-`, alles andere
+/// läuft als UTF-16BE in modifiziertem Base64 („ä“ → „&AOQ-“).
+pub fn encode_utf7(name: &str) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+,";
+    fn flush(buf: &mut Vec<u16>, out: &mut String) {
+        if buf.is_empty() {
+            return;
+        }
+        let bytes: Vec<u8> = buf.iter().flat_map(|u| u.to_be_bytes()).collect();
+        out.push('&');
+        for chunk in bytes.chunks(3) {
+            let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+            let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+            out.push(T[(n >> 18) as usize & 63] as char);
+            out.push(T[(n >> 12) as usize & 63] as char);
+            if chunk.len() > 1 {
+                out.push(T[(n >> 6) as usize & 63] as char);
+            }
+            if chunk.len() > 2 {
+                out.push(T[n as usize & 63] as char);
+            }
+        }
+        out.push('-');
+        buf.clear();
+    }
+    let mut out = String::new();
+    let mut buf: Vec<u16> = Vec::new();
+    for c in name.chars() {
+        if (' '..='~').contains(&c) {
+            flush(&mut buf, &mut out);
+            if c == '&' {
+                out.push_str("&-");
+            } else {
+                out.push(c);
+            }
+        } else {
+            let mut units = [0u16; 2];
+            buf.extend_from_slice(c.encode_utf16(&mut units));
+        }
+    }
+    flush(&mut buf, &mut out);
+    out
+}
+
 /// Sortier-Rang: INBOX zuerst, dann die Rollenordner, dann der Rest.
 pub fn role_rank(role: FolderRole) -> u8 {
     match role {
@@ -148,6 +193,20 @@ mod tests {
         assert_eq!(decode_utf7("A&-B"), "A&B");
         assert_eq!(decode_utf7("INBOX/Projekte"), "INBOX/Projekte");
         assert_eq!(decode_utf7("&kaputt"), "&kaputt");
+    }
+
+    #[test]
+    fn utf7_encoding_roundtrip() {
+        assert_eq!(encode_utf7("Entwürfe"), "Entw&APw-rfe");
+        assert_eq!(encode_utf7("Gelöscht"), "Gel&APY-scht");
+        assert_eq!(encode_utf7("A&B"), "A&-B");
+        assert_eq!(encode_utf7("INBOX/Projekte"), "INBOX/Projekte");
+        for name in ["Rechnungen äöü/2026", "日本語", "Ordner 📁 & mehr", "~peter/mail/台北/日本語"] {
+            assert_eq!(decode_utf7(&encode_utf7(name)), name, "{name}");
+            assert!(encode_utf7(name).is_ascii());
+        }
+        // RFC-3501-Beispiel
+        assert_eq!(encode_utf7("~peter/mail/台北/日本語"), "~peter/mail/&U,BTFw-/&ZeVnLIqe-");
     }
 
     #[test]

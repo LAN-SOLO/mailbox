@@ -81,8 +81,28 @@ pub fn load(app: &tauri::AppHandle) -> Settings {
         .unwrap_or_default()
 }
 
-pub fn store(app: &tauri::AppHandle, settings: &Settings) {
-    if let Ok(json) = serde_json::to_string_pretty(settings) {
-        let _ = std::fs::write(settings_path(app), json);
+pub fn store(app: &tauri::AppHandle, settings: &Settings) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    crate::accounts::write_atomic(&settings_path(app), json.as_bytes(), false).map_err(|e| e.to_string())
+}
+
+impl Settings {
+    /// Werte aus dem Frontend auf gültige Bereiche begrenzen.
+    pub fn sanitized(mut self) -> Self {
+        if self.language != "de" && self.language != "en" {
+            self.language = "en".into();
+        }
+        if self.mode != "simple" && self.mode != "expert" {
+            self.mode = "simple".into();
+        }
+        if self.theme != "dark" && self.theme != "light" {
+            self.theme = "dark".into();
+        }
+        if !matches!(self.accent.as_str(), "blue" | "emerald" | "violet" | "amber") {
+            self.accent = "blue".into();
+        }
+        self.page_size = self.page_size.clamp(10, 500);
+        self.check_interval_min = self.check_interval_min.min(1440);
+        self
     }
 }

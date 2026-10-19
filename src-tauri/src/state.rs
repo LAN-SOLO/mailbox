@@ -20,6 +20,6 @@ impl AppState {
             .iter()
             .find(|a| a.id == id)
             .cloned()
-            .ok_or_else(|| "Konto nicht gefunden".to_string())
+            .ok_or_else(|| crate::lang::tr("Konto nicht gefunden", "Account not found"))
     }
 }

@@ -4,6 +4,7 @@
 mod accounts;
 mod commands;
 mod imap;
+mod lang;
 mod settings;
 mod smtp;
 mod state;
@@ -22,7 +23,8 @@ fn main() {
             let handle = app.handle().clone();
             let config_dir = settings::config_dir(&handle);
             let cache_dir = settings::cache_dir(&handle);
-            let s = settings::load(&handle);
+            let s = settings::load(&handle).sanitized();
+            lang::set(&s.language);
             let accounts = accounts::load(&config_dir);
             app.manage(Arc::new(AppState {
                 settings: Mutex::new(s),

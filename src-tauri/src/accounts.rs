@@ -2,6 +2,7 @@
 //! OS-Schlüsselbund, sonst — wenn der nicht erreichbar ist — in einer
 //! Datei `credentials.json` mit 0600.
 
+use crate::lang::tr;
 use mailbox_core::Security;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -87,7 +88,34 @@ pub fn load(dir: &Path) -> Vec<Account> {
 
 pub fn store(dir: &Path, accounts: &[Account]) -> Result<(), String> {
     let json = serde_json::to_string_pretty(accounts).map_err(|e| e.to_string())?;
-    std::fs::write(accounts_path(dir), json).map_err(|e| e.to_string())
+    write_atomic(&accounts_path(dir), json.as_bytes(), false).map_err(|e| e.to_string())
+}
+
+/// Schreibt erst in eine Nachbardatei und benennt dann um — ein Absturz
+/// mitten im Schreiben hinterlässt so nie eine halbe JSON-Datei. Mit
+/// `private` entsteht die Datei auf Unix gleich mit 0600 (nicht erst
+/// lesbar angelegt und danach eingeschränkt). Auf Windows liegt der
+/// App-Datenordner ohnehin im Benutzerprofil mit Benutzer-ACL.
+pub fn write_atomic(path: &Path, data: &[u8], private: bool) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = path.with_extension("json.tmp");
+    let _ = std::fs::remove_file(&tmp);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        if private {
+            opts.mode(0o600);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = private;
+    let mut f = opts.open(&tmp)?;
+    f.write_all(data)?;
+    f.sync_all()?;
+    drop(f);
+    std::fs::rename(&tmp, path)
 }
 
 // --- Passwörter -----------------------------------------------------------
@@ -102,9 +130,10 @@ fn file_credentials(dir: &Path) -> HashMap<String, String> {
 fn write_file_credentials(dir: &Path, creds: &HashMap<String, String>) -> Result<(), String> {
     let path = credentials_path(dir);
     let json = serde_json::to_string_pretty(creds).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    write_atomic(&path, json.as_bytes(), true).map_err(|e| e.to_string())?;
     #[cfg(unix)]
     {
+        // Altbestand (vor 1.0 ggf. kurz lesbar angelegt) ebenfalls einschränken.
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
@@ -143,7 +172,12 @@ pub fn get_password(dir: &Path, account: &Account) -> Result<String, String> {
     // Letzter Versuch: Schlüsselbund trotz anderer Markierung.
     keyring::Entry::new(KEYRING_SERVICE, &account.id)
         .and_then(|e| e.get_password())
-        .map_err(|_| "Kein Passwort hinterlegt — bitte im Konto neu eingeben.".to_string())
+        .map_err(|_| {
+            tr(
+                "Kein Passwort hinterlegt — bitte im Konto neu eingeben.",
+                "No password stored — please enter it again in the account.",
+            )
+        })
 }
 
 pub fn delete_password(dir: &Path, account_id: &str) {
@@ -153,5 +187,32 @@ pub fn delete_password(dir: &Path, account_id: &str) {
     let mut creds = file_credentials(dir);
     if creds.remove(account_id).is_some() {
         let _ = write_file_credentials(dir, &creds);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credentials_file_is_private_and_atomic() {
+        let dir = std::env::temp_dir().join(format!("mailbox-acc-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut creds = HashMap::new();
+        creds.insert("a1".to_string(), "geheim".to_string());
+        write_file_credentials(&dir, &creds).unwrap();
+        creds.insert("a2".to_string(), "zwei".to_string());
+        write_file_credentials(&dir, &creds).unwrap();
+        let back = file_credentials(&dir);
+        assert_eq!(back.get("a1").map(String::as_str), Some("geheim"));
+        assert_eq!(back.len(), 2);
+        assert!(!dir.join("credentials.json.tmp").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(credentials_path(&dir)).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -4,6 +4,8 @@
 //!        -Dgreenmail.users=test:pass@lan-solo.test,anna:pass@lan-solo.test' \
 //!     greenmail/standalone:2.1.0
 //!   cargo test -p mailbox -- --ignored e2e
+//! Andere Host-Ports (z. B. wenn 3025/3143 belegt sind):
+//!   MAILBOX_E2E_SMTP_PORT=13025 MAILBOX_E2E_IMAP_PORT=13143 cargo test -p mailbox -- --ignored e2e
 //! Passwörter kommen aus credentials.json (Datei-Fallback) — der
 //! Schlüsselbund bleibt im Test unberührt.
 
@@ -13,16 +15,20 @@ use crate::settings::Settings;
 use mailbox_core::Security;
 use std::sync::Mutex;
 
+fn port(var: &str, default: u16) -> u16 {
+    std::env::var(var).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
 fn account(id: &str, user: &str) -> Account {
     Account {
         id: id.into(),
         name: format!("{user} Test"),
         email: format!("{user}@lan-solo.test"),
         imap_host: "localhost".into(),
-        imap_port: 3143,
+        imap_port: port("MAILBOX_E2E_IMAP_PORT", 3143),
         imap_security: Security::None,
         smtp_host: "localhost".into(),
-        smtp_port: 3025,
+        smtp_port: port("MAILBOX_E2E_SMTP_PORT", 3025),
         smtp_security: Security::None,
         username: user.into(),
         signature: "-- \nmailbox e2e".into(),
@@ -80,7 +86,7 @@ fn e2e_roundtrip() {
             references: vec![],
             ..Default::default()
         };
-        let m = smtp::build_message(&anna, &d).unwrap();
+        let m = smtp::build_message(&anna, &d, &[], true).unwrap();
         smtp::send(&anna, "pass", &m).unwrap();
     };
     let s_welcome = format!("Willkommen bei mailbox {run}");
@@ -160,7 +166,7 @@ fn e2e_roundtrip() {
         ..Default::default()
     };
     let acc = st.account("t").unwrap();
-    let msg = smtp::build_message(&acc, &draft).unwrap();
+    let msg = smtp::build_message(&acc, &draft, &[], true).unwrap();
     let bytes = smtp::send(&acc, "pass", &msg).unwrap();
     let _ = append_to_role(&st, "t", FolderRole::Sent, None, &bytes, vec![Flag::Seen]).unwrap();
     let anna_inbox = list(&st, "a", "INBOX");
@@ -196,4 +202,135 @@ fn e2e_roundtrip() {
 
     // Konto-Probe (SMTP-Test)
     assert!(smtp::test(&acc, "pass").unwrap().starts_with("OK"));
+}
+
+/// Die Kommando-Logik selbst (do_*-Funktionen hinter den Tauri-Commands):
+/// Liste + Cache, Suche, Ordner mit Umlauten, Weiterleiten mit Anhängen,
+/// Entwurf fortsetzen/ersetzen, Löschen in den Papierkorb und endgültig.
+#[test]
+#[ignore]
+fn e2e_commands() {
+    let st = state(vec![account("t", "test"), account("a", "anna")]);
+    let run = format!("{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+
+    // Seed: Mail mit PDF-Anhang direkt in test/INBOX
+    let subject = format!("Anhang-Test {run}");
+    let raw = format!(
+        "From: Anna <anna@lan-solo.test>\r\nTo: test@lan-solo.test\r\nSubject: {subject}\r\nMessage-ID: <att-{run}@lan-solo.test>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b1\"\r\n\r\n--b1\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nAnbei.\r\n--b1\r\nContent-Type: application/pdf; name=\"Angebot.pdf\"\r\nContent-Disposition: attachment; filename=\"../../Angebot.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERi0xLjQgdGVzdA==\r\n--b1--\r\n"
+    );
+    st.pool.with(&st, "t", |s| s.append("INBOX", raw.as_bytes()).finish()).unwrap();
+
+    // Liste über do_list: erst Server, dann Cache
+    let page = do_list(&st, "t", "INBOX", 0, 50, true).unwrap();
+    assert!(!page.from_cache);
+    let m = page.messages.iter().find(|m| m.subject == subject).expect("seeded").clone();
+    assert!(m.has_attachments);
+    let cached = do_list(&st, "t", "INBOX", 0, 50, false).unwrap();
+    assert!(cached.from_cache);
+    assert_eq!(cached.total, page.total);
+
+    // Anhangsname ist entschärft
+    let (raw_back, ..) = fetch_raw_or_err(&st, "t", "INBOX", m.uid).unwrap();
+    let parsed = parse_message(&raw_back).unwrap();
+    let att = parsed.attachments.iter().find(|a| !a.inline).unwrap();
+    assert_eq!(att.filename, "Angebot.pdf");
+
+    // Ordner mit Umlaut anlegen → UTF-7 auf dem Server, Anzeige dekodiert
+    let fname = format!("Prüfung {run}");
+    do_create_folder(&st, "t", &fname).unwrap();
+    let folders = st.pool.with(&st, "t", |s| fetch_folders(s, false)).unwrap();
+    let f = folders.iter().find(|f| f.display == fname).expect("utf7 folder");
+    assert!(f.name.is_ascii() && f.name.contains("&APw-"), "{}", f.name);
+    assert!(do_create_folder(&st, "t", "  ").is_err());
+
+    // Weiterleiten mit Originalanhang an anna
+    let fwd_subject = format!("Fwd: {subject}");
+    let fwd = Draft {
+        account_id: "t".into(),
+        to: "anna@lan-solo.test".into(),
+        subject: fwd_subject.clone(),
+        body: "siehe Anhang".into(),
+        server_attachments: Some(ServerAttachments { folder: "INBOX".into(), uid: m.uid, indices: vec![att.index] }),
+        ..Default::default()
+    };
+    do_send(&st, &fwd).unwrap();
+    let anna = list(&st, "a", "INBOX");
+    let got = anna.iter().find(|x| x.subject == fwd_subject).expect("forward delivered");
+    let (raw_fwd, ..) = fetch_raw_or_err(&st, "a", "INBOX", got.uid).unwrap();
+    let p = parse_message(&raw_fwd).unwrap();
+    let a = p.attachments.iter().find(|a| a.filename == "Angebot.pdf").expect("attachment forwarded");
+    assert_eq!(mailbox_core::attachment_bytes(&raw_fwd, a.index).unwrap(), b"%PDF-1.4 test");
+
+    // Tippfehler im Empfänger: Senden verweigert, nichts verschickt
+    let bad = Draft { account_id: "t".into(), to: "anna@lan-solo.test, anna".into(), subject: "x".into(), ..Default::default() };
+    assert!(do_send(&st, &bad).unwrap_err().contains("anna"));
+
+    // Entwurf speichern, dann fortsetzen und ersetzen → genau einer bleibt
+    let dsub = format!("Entwurf {run}");
+    let d1 = Draft { account_id: "t".into(), to: "anna@lan-solo.test, unfertig".into(), subject: dsub.clone(), body: "v1".into(), ..Default::default() };
+    do_save_draft(&st, &d1).unwrap();
+    let folders = st.pool.with(&st, "t", |s| fetch_folders(s, false)).unwrap();
+    let drafts = find_role(&folders, FolderRole::Drafts).expect("drafts folder");
+    let first = list(&st, "t", &drafts).into_iter().find(|x| x.subject == dsub).expect("draft v1");
+    let d2 = Draft {
+        account_id: "t".into(),
+        to: "anna@lan-solo.test".into(),
+        subject: dsub.clone(),
+        body: "v2".into(),
+        replaces_draft: Some(MessageRef { folder: drafts.clone(), uid: first.uid }),
+        ..Default::default()
+    };
+    do_save_draft(&st, &d2).unwrap();
+    let now: Vec<_> = list(&st, "t", &drafts).into_iter().filter(|x| x.subject == dsub).collect();
+    assert_eq!(now.len(), 1, "old draft replaced");
+    assert_ne!(now[0].uid, first.uid);
+    // Senden aus dem Entwurf entfernt ihn
+    let d3 = Draft { replaces_draft: Some(MessageRef { folder: drafts.clone(), uid: now[0].uid }), ..d2.clone() };
+    do_send(&st, &d3).unwrap();
+    assert!(list(&st, "t", &drafts).iter().all(|x| x.subject != dsub), "draft removed after send");
+    // Ein Verweis auf eine gewöhnliche Mail löscht nichts
+    remove_draft(&st, "t", &MessageRef { folder: "INBOX".into(), uid: m.uid }).unwrap();
+    assert!(list(&st, "t", "INBOX").iter().any(|x| x.uid == m.uid));
+
+    // Löschen: erst Papierkorb (wird bei Bedarf über Rolle gefunden), dort endgültig
+    let trash_name = format!("Trash-{run}");
+    let has_trash = find_role(&st.pool.with(&st, "t", |s| fetch_folders(s, false)).unwrap(), FolderRole::Trash);
+    let trash = match has_trash {
+        Some(t) => t,
+        None => {
+            st.pool.with(&st, "t", |s| s.create(&trash_name)).unwrap();
+            // GreenMail kennt kein SPECIAL-USE: Rolle über den Namen „Trash“
+            st.pool.with(&st, "t", |s| s.create("Trash")).ok();
+            "Trash".to_string()
+        }
+    };
+    do_delete(&st, "t", "INBOX", &[m.uid]).unwrap();
+    assert!(list(&st, "t", "INBOX").iter().all(|x| x.uid != m.uid));
+    let in_trash = list(&st, "t", &trash);
+    let t_msg = in_trash.iter().find(|x| x.subject == subject).expect("moved to trash");
+    do_delete(&st, "t", &trash, &[t_msg.uid]).unwrap();
+    assert!(list(&st, "t", &trash).iter().all(|x| x.subject != subject), "deleted permanently");
+}
+
+/// Ohne Server: Eingabeprüfung des Konto-Dialogs.
+#[test]
+fn account_validation() {
+    let mut input: AccountInput = serde_json::from_value(serde_json::json!({
+        "name": "", "email": " neu@lan-solo.test ", "imapHost": " localhost ", "imapPort": 3143,
+        "imapSecurity": "none", "smtpHost": "localhost", "smtpPort": 3025, "smtpSecurity": "none",
+        "username": ""
+    }))
+    .unwrap();
+    let ok = validate_input(input.clone()).unwrap();
+    assert_eq!(ok.email, "neu@lan-solo.test");
+    assert_eq!(ok.username, "neu@lan-solo.test");
+    assert_eq!(ok.imap_host, "localhost");
+    input.imap_port = 0;
+    assert!(validate_input(input.clone()).is_err());
+    input.imap_port = 993;
+    input.smtp_host = "https://smtp.x.de".into();
+    assert!(validate_input(input.clone()).is_err());
+    input.smtp_host = "smtp.x.de".into();
+    input.email = "kein-at".into();
+    assert!(validate_input(input).is_err());
 }

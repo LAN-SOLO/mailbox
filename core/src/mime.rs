@@ -153,7 +153,8 @@ pub fn parse_message(raw: &[u8]) -> Option<ParsedMessage> {
         };
         let filename = part
             .attachment_name()
-            .map(String::from)
+            .map(safe_filename)
+            .filter(|n| !n.is_empty())
             .unwrap_or_else(|| default_name(&mime, idx));
         let referenced = cid
             .as_ref()
@@ -197,6 +198,38 @@ pub fn attachment_bytes(raw: &[u8], index: usize) -> Option<Vec<u8>> {
         PartType::Message(m) => m.raw_message().to_vec(),
         _ => part.contents().to_vec(),
     })
+}
+
+/// Dateiname aus einer (fremden) Mail so entschärfen, dass er als
+/// Vorschlag im Speichern-Dialog keinen Pfad mitbringt und auf Windows wie
+/// macOS gültig ist: nur das letzte Segment, keine Steuer- und reservierten
+/// Zeichen, keine Punkte/Leerzeichen am Ende, keine DOS-Gerätenamen,
+/// höchstens 180 Zeichen. Leer bleibt leer (Aufrufer setzt einen Ersatz).
+pub fn safe_filename(name: &str) -> String {
+    let last = name.rsplit(['/', '\\']).next().unwrap_or("");
+    let mut s: String = last
+        .chars()
+        .filter(|c| !c.is_control() && !matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+        .map(|c| if matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') { '_' } else { c })
+        .collect();
+    s = s.trim().trim_end_matches(['.', ' ']).trim_start_matches('.').to_string();
+    let stem = s.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && stem.as_bytes()[3].is_ascii_digit());
+    if reserved {
+        s.insert(0, '_');
+    }
+    if s.chars().count() > 180 {
+        let ext: String = match s.rfind('.') {
+            Some(i) if s.len() - i <= 12 => s[i..].to_string(),
+            _ => String::new(),
+        };
+        let keep = 180 - ext.chars().count();
+        s = s.chars().take(keep).collect::<String>() + &ext;
+    }
+    s
 }
 
 fn default_name(mime: &str, idx: usize) -> String {
@@ -311,6 +344,33 @@ JVBERi0xLjQK\r\n\
         assert_eq!(s.subject, "Test Überschrift");
         assert_eq!(s.from[0].name.as_deref(), Some("Jürgen Müller"));
         assert!(s.date.is_some());
+    }
+
+    #[test]
+    fn filenames_are_defused() {
+        assert_eq!(safe_filename("Rechnung.pdf"), "Rechnung.pdf");
+        assert_eq!(safe_filename("../../.ssh/authorized_keys"), "authorized_keys");
+        assert_eq!(safe_filename("C:\\Windows\\evil.exe"), "evil.exe");
+        assert_eq!(safe_filename("/Users/x/Library/LaunchAgents/a.plist"), "a.plist");
+        assert_eq!(safe_filename("a<b>:c|d?.txt"), "a_b__c_d_.txt");
+        assert_eq!(safe_filename("CON.txt"), "_CON.txt");
+        assert_eq!(safe_filename("com1"), "_com1");
+        assert_eq!(safe_filename("computer.txt"), "computer.txt");
+        assert_eq!(safe_filename("datei.   "), "datei");
+        assert_eq!(safe_filename(".bashrc"), "bashrc");
+        assert_eq!(safe_filename("rechnung\u{202e}fdp.exe"), "rechnungfdp.exe");
+        assert_eq!(safe_filename(""), "");
+        let long = format!("{}.pdf", "x".repeat(400));
+        let out = safe_filename(&long);
+        assert_eq!(out.chars().count(), 180);
+        assert!(out.ends_with(".pdf"));
+    }
+
+    #[test]
+    fn hostile_attachment_name_in_mail() {
+        let raw = "From: a@b.c\r\nSubject: x\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nhi\r\n--b\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"../../evil.sh\"\r\n\r\nxx\r\n--b--\r\n";
+        let m = parse_message(raw.as_bytes()).unwrap();
+        assert_eq!(m.attachments[0].filename, "evil.sh");
     }
 
     #[test]

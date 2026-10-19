@@ -33,6 +33,45 @@ impl Address {
 /// in Adressen. Trennzeichen sind Komma und Semikolon außerhalb von
 /// Anführungszeichen und spitzen Klammern; Einträge ohne `@` werden ignoriert.
 pub fn parse_addresses(input: &str) -> Vec<Address> {
+    split_entries(input).iter().filter_map(|e| parse_single(e)).collect()
+}
+
+/// Wie [`parse_addresses`], meldet aber Einträge, die keine Adresse ergeben
+/// (Tippfehler wie „max@x.de, anna“), statt sie still zu verwerfen. Der
+/// Fehler nennt die verworfenen Einträge.
+pub fn parse_addresses_strict(input: &str) -> Result<Vec<Address>, Vec<String>> {
+    let mut ok = Vec::new();
+    let mut bad = Vec::new();
+    for e in split_entries(input) {
+        let t = e.trim();
+        if t.is_empty() {
+            continue;
+        }
+        match parse_single(t) {
+            Some(a) if is_plausible(&a.email) => ok.push(a),
+            _ => bad.push(t.to_string()),
+        }
+    }
+    if bad.is_empty() {
+        Ok(ok)
+    } else {
+        Err(bad)
+    }
+}
+
+/// Grobe Plausibilität: genau ein `@`, nichts Leeres davor/danach, kein
+/// Leer- oder Steuerzeichen.
+fn is_plausible(email: &str) -> bool {
+    let mut parts = email.split('@');
+    let (Some(local), Some(domain), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    !local.is_empty()
+        && !domain.is_empty()
+        && !email.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '<' | '>' | ',' | ';'))
+}
+
+fn split_entries(input: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut buf = String::new();
     let mut in_quotes = false;
@@ -52,17 +91,12 @@ pub fn parse_addresses(input: &str) -> Vec<Address> {
                 buf.push(c);
             }
             ',' | ';' | '\n' if !in_quotes && !in_angle => {
-                if let Some(a) = parse_single(&buf) {
-                    out.push(a);
-                }
-                buf.clear();
+                out.push(std::mem::take(&mut buf));
             }
             _ => buf.push(c),
         }
     }
-    if let Some(a) = parse_single(&buf) {
-        out.push(a);
-    }
+    out.push(buf);
     out
 }
 
@@ -106,6 +140,16 @@ mod tests {
     fn ignores_garbage() {
         assert!(parse_addresses("kein-at, , ;").is_empty());
         assert_eq!(parse_addresses("  a@b.c  ").len(), 1);
+    }
+
+    #[test]
+    fn strict_reports_typos() {
+        assert_eq!(parse_addresses_strict("a@b.de, , Max <m@x.de>").unwrap().len(), 2);
+        assert_eq!(parse_addresses_strict("").unwrap().len(), 0);
+        assert_eq!(parse_addresses_strict("a@b.de, anna").unwrap_err(), vec!["anna".to_string()]);
+        assert_eq!(parse_addresses_strict("Max <kein-at>").unwrap_err().len(), 1);
+        assert_eq!(parse_addresses_strict("a@@b.de").unwrap_err().len(), 1);
+        assert!(parse_addresses_strict("\"Doe, Jane\" <j@d.org>; y@z.de").is_ok());
     }
 
     #[test]

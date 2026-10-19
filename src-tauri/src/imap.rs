@@ -1,16 +1,31 @@
 //! IMAP-Sessions: ein Pool je Konto (get-or-connect), bei Verbindungs-
-//! fehlern wird einmal neu verbunden und der Befehl wiederholt.
+//! fehlern wird einmal neu verbunden und der Befehl wiederholt. Sessions,
+//! die länger als [`STALE_AFTER`] ungenutzt waren, werden vor dem nächsten
+//! Befehl verworfen und neu aufgebaut — nach Ruhezustand oder WLAN-Wechsel
+//! ist die alte TCP-Verbindung oft tot, ohne dass es jemand merkt, und ein
+//! Lesezugriff darauf hinge minutenlang.
 
 use crate::accounts::{self, Account};
+use crate::lang::tr;
 use crate::state::AppState;
 use imap::{ClientBuilder, Connection, ConnectionMode, Session};
 use mailbox_core::Security;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
 pub type ImapSession = Session<Connection>;
 
-type Slot = Arc<Mutex<Option<ImapSession>>>;
+/// Ungenutzte Sessions älter als das gelten als verdächtig. Wanduhr statt
+/// `Instant`, weil `Instant` auf macOS im Ruhezustand stehen bleibt.
+const STALE_AFTER: Duration = Duration::from_secs(4 * 60);
+
+struct Pooled {
+    session: ImapSession,
+    last_used: SystemTime,
+}
+
+type Slot = Arc<Mutex<Option<Pooled>>>;
 
 #[derive(Default)]
 pub struct SessionPool {
@@ -20,14 +35,19 @@ pub struct SessionPool {
 /// Lesbare Fehlermeldung aus einem IMAP-Fehler.
 pub fn readable(e: &imap::Error) -> String {
     match e {
-        imap::Error::Io(io) => format!("Verbindung fehlgeschlagen: {io}"),
-        imap::Error::RustlsHandshake(t) => format!("TLS-Fehler: {t}"),
-        imap::Error::No(no) => format!("Server lehnt ab: {}", no.information),
-        imap::Error::Bad(bad) => format!("Ungültiger Befehl: {}", bad.information),
-        imap::Error::Bye(bye) => format!("Server hat die Verbindung beendet: {}", bye.information),
-        imap::Error::ConnectionLost => "Verbindung verloren".into(),
-        imap::Error::StartTlsNotAvailable => "Server bietet kein STARTTLS an".into(),
-        imap::Error::Parse(p) => format!("Antwort nicht lesbar: {p}"),
+        imap::Error::Io(io) => format!("{}: {io}", tr("Verbindung fehlgeschlagen", "Connection failed")),
+        imap::Error::RustlsHandshake(t) => format!("{}: {t}", tr("TLS-Fehler", "TLS error")),
+        imap::Error::No(no) => format!("{}: {}", tr("Server lehnt ab", "Server refused"), no.information),
+        imap::Error::Bad(bad) => format!("{}: {}", tr("Ungültiger Befehl", "Invalid command"), bad.information),
+        imap::Error::Bye(bye) => format!(
+            "{}: {}",
+            tr("Server hat die Verbindung beendet", "Server closed the connection"),
+            bye.information
+        ),
+        imap::Error::ConnectionLost => tr("Verbindung verloren", "Connection lost"),
+        imap::Error::StartTlsNotAvailable => tr("Server bietet kein STARTTLS an", "Server does not offer STARTTLS"),
+        imap::Error::Parse(p) => format!("{}: {p}", tr("Antwort nicht lesbar", "Unreadable response")),
+        imap::Error::Validate(v) => format!("{}: {v}", tr("Ungültige Eingabe", "Invalid input")),
         other => other.to_string(),
     }
 }
@@ -53,8 +73,8 @@ pub fn connect(acc: &Account, password: &str) -> Result<ImapSession, String> {
     client
         .login(&acc.username, password)
         .map_err(|(e, _)| match &e {
-            imap::Error::No(no) => format!("Login fehlgeschlagen: {}", no.information),
-            other => format!("Login fehlgeschlagen: {}", readable(other)),
+            imap::Error::No(no) => format!("{}: {}", tr("Login fehlgeschlagen", "Login failed"), no.information),
+            other => format!("{}: {}", tr("Login fehlgeschlagen", "Login failed"), readable(other)),
         })
 }
 
@@ -68,8 +88,12 @@ impl SessionPool {
     pub fn drop_session(&self, account_id: &str) {
         let slot = self.slot(account_id);
         let mut guard = slot.lock().unwrap();
-        if let Some(mut s) = guard.take() {
-            let _ = s.logout();
+        if let Some(mut p) = guard.take() {
+            // Nur höflich abmelden, wenn die Verbindung frisch ist — auf einer
+            // toten Verbindung hinge LOGOUT.
+            if !is_stale(p.last_used) {
+                let _ = p.session.logout();
+            }
         }
     }
 
@@ -84,13 +108,19 @@ impl SessionPool {
         let account = st.account(account_id)?;
         let slot = self.slot(account_id);
         let mut guard = slot.lock().unwrap();
+        if guard.as_ref().is_some_and(|p| is_stale(p.last_used)) {
+            // Socket schließen, ohne auf eine Antwort zu warten.
+            *guard = None;
+        }
         for attempt in 0..2 {
             if guard.is_none() {
                 let password = accounts::get_password(&st.config_dir, &account)?;
-                *guard = Some(connect(&account, &password)?);
+                *guard = Some(Pooled { session: connect(&account, &password)?, last_used: SystemTime::now() });
             }
-            let session = guard.as_mut().expect("session present");
-            match f(session) {
+            let pooled = guard.as_mut().expect("session present");
+            let result = f(&mut pooled.session);
+            pooled.last_used = SystemTime::now();
+            match result {
                 Ok(v) => return Ok(v),
                 Err(e) => {
                     if attempt == 0 && is_connection_error(&e) {
@@ -101,6 +131,23 @@ impl SessionPool {
                 }
             }
         }
-        Err("Verbindung fehlgeschlagen".into())
+        Err(tr("Verbindung fehlgeschlagen", "Connection failed"))
+    }
+}
+
+fn is_stale(last_used: SystemTime) -> bool {
+    // Uhr zurückgestellt (Err) zählt ebenfalls als verdächtig.
+    SystemTime::now().duration_since(last_used).map(|d| d > STALE_AFTER).unwrap_or(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn staleness() {
+        assert!(!is_stale(SystemTime::now()));
+        assert!(is_stale(SystemTime::now() - Duration::from_secs(5 * 60)));
+        assert!(is_stale(SystemTime::now() + Duration::from_secs(60)));
     }
 }
