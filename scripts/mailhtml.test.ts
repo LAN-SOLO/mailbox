@@ -20,4 +20,9 @@ const refresh = wrapHtml(`<META HTTP-EQUIV="refresh" content="0;url=${T}/r"><met
 ok('mail http-equiv (refresh) defused', !/<meta[^>]*\shttp-equiv\s*=\s*["']?refresh/i.test(refresh) && (refresh.match(/data-http-equiv/g) ?? []).length === 2, refresh);
 ok('own CSP meta untouched', refresh.startsWith('<!doctype html><meta http-equiv="Content-Security-Policy"'));
 ok('text mentioning http-equiv untouched', refresh.includes('<p>http-equiv=x im Text</p>'));
+// Verifikation Runde 2: „>“ im Attributwert vor http-equiv, <link http-equiv> (würde zu <meta>), Großschrift
+const tricky = wrapHtml(`<meta content="0;url=${T}/r?a>b" http-equiv="refresh"><LINK HTTP-EQUIV=refresh content="0;url=${T}/l"><meta name='a>b' http-equiv = refresh content=0;url=${T}/u><meta/http-equiv=refresh content=1>`, false);
+const live = [...tricky.matchAll(/<meta((?:[^>"']|"[^"]*"|'[^']*')*)>/gi)].filter((x) => /(^|[\s/])http-equiv\s*=\s*["']?refresh/i.test(x[1]));
+ok('http-equiv defused despite > in values and in <link>', live.length === 0 && (tricky.match(/data-http-equiv/gi) ?? []).length === 4, tricky);
+ok('unterminated meta does not hang or throw', wrapHtml('<meta content="x', false).endsWith('<meta content="x'));
 if (fail) { console.log(fail, 'failures'); process.exit(1); }

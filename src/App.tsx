@@ -232,11 +232,19 @@ export default function App() {
     }
   }, [accounts, folders, fail, pageSize]);
 
+  /** Anzeige leeren — und eine noch laufende get_message-Antwort verwerfen
+   *  (sonst taucht nach Ordnerwechsel/Löschen die alte Nachricht wieder auf). */
+  const clearDetail = () => {
+    openReq.current++;
+    setActive(null);
+    setDetail(null);
+    setDetailLoading(false);
+  };
+
   const resetList = () => {
     setMessages([]);
     setTotal(0);
-    setActive(null);
-    setDetail(null);
+    clearDetail();
     setSelected(new Set());
     setSearchActive(false);
   };
@@ -351,8 +359,7 @@ export default function App() {
     setTotal((n) => Math.max(0, n - list.length));
     setSelected(new Set());
     if (active && keys.has(msgKey(active))) {
-      setActive(null);
-      setDetail(null);
+      clearDetail();
       if (next) openMessage(next);
     }
     for (const m of list) if (!m.seen) bumpUnread(m.accountId, m.folder, -1);
@@ -646,10 +653,7 @@ export default function App() {
   const afterDraftReplaced = (r: { accountId: string; folder: string; uid: number }) => {
     const key = `${r.accountId}|${r.folder}|${r.uid}`;
     setMessages((m) => m.filter((x) => msgKey(x) !== key));
-    if (active && msgKey(active) === key) {
-      setActive(null);
-      setDetail(null);
-    }
+    if (active && msgKey(active) === key) clearDetail();
     if (sel && sel.accountId === r.accountId && sel.folder === r.folder) loadList(sel, 0, false);
   };
 

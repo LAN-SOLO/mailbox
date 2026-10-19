@@ -308,6 +308,9 @@ impl SessionPool {
         let account = st.account(account_id)?;
         let slot = self.slot(account_id);
         let mut guard = slot.lock().unwrap();
+        // Während des Wartens auf die Session gelöscht → nicht neu verbinden
+        // (die Session hinge sonst bis Programmende am entfernten Konto).
+        st.account(account_id)?;
         if guard.as_ref().is_some_and(|p| is_stale(p.last_used)) {
             // Socket schließen, ohne auf eine Antwort zu warten.
             *guard = None;

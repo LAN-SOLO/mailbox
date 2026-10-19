@@ -1,6 +1,6 @@
 # mailbox. 1.0 — Funktions- und Sicherheitsaudit
 
-Stand: 2026-10-20 (Runde 2, § 7) · 2026-10-19 · Basis: `0864694` (v0.1.0 + Hilfe-Sprachumschalter) · Ziel: Test-Build 1.0.0 für macOS und Windows.
+Stand: 2026-10-20 (Runde 2, § 7; Verifikation § 8) · 2026-10-19 · Basis: `0864694` (v0.1.0 + Hilfe-Sprachumschalter) · Ziel: Test-Build 1.0.0 für macOS und Windows.
 
 Legende Teststatus:
 - **E2E** — automatisiert gegen einen echten IMAP/SMTP-Server (GreenMail 2.1.0 in Docker, `cargo test -p mailbox -- --ignored e2e`)
@@ -194,7 +194,10 @@ Jeweils auf **macOS** (arm64 oder Intel) und **Windows 11** abhaken. Testkonto b
 - [ ] Hängender Server: nach Login das Netz kappen (Kabel/WLAN), „Abrufen“ → nach ≤ 100 s „Zeitüberschreitung“, die App bleibt bedienbar; Netz wieder an, „Abrufen“ → Liste kommt
 - [ ] Windows: Anhang als PDF speichern, PDF im Acrobat offen lassen, erneut unter **demselben** Namen speichern → Meldung „… vermutlich in einem anderen Programm geöffnet“; nach Schließen klappt es; keine `.part`-Reste im Ordner
 - [ ] Windows: Speicherort in OneDrive-Ordner mit Umlaut im Pfad → Datei vollständig, keine `.part`-Reste
-- [ ] Konto entfernen, während eine Liste lädt → App friert nicht ein, Konto verschwindet
+- [ ] Konto entfernen, während eine Liste lädt → App friert nicht ein, Konto verschwindet und sein Cache-Ordner bleibt danach weg (Runde 2 – Verifikation, W3)
+- [ ] macOS, frische Installation: Anhang nach **Downloads**, **Dokumente** und **Schreibtisch** speichern — erscheint eine Datenschutz-Abfrage („… auf Dateien im Ordner … zugreifen“)? Mit „Nicht erlauben“ muss trotzdem gespeichert werden (W4: Rückfall auf direktes Schreiben)
+- [ ] Anhang mit sehr langem Namen (~240 Zeichen) speichern → klappt, keine `.part`-Reste (W4)
+- [ ] macOS: Schlüsselbund-Rückfrage beim Ändern des Passworts offen lassen → Fenster bleibt bedienbar (W5)
 
 ## 6. Verifikation (zweiter, unabhängiger Prüfer, 2026-10-19)
 
@@ -301,3 +304,45 @@ Basis: `aa1a93c`. Ziel: Reste aus Runde 1 im Code beheben (nicht nur dokumentier
 - Ohne UIDPLUS: endgültiges Löschen und Entwurf ersetzen per `EXPUNGE` des ganzen Ordners (unverändert).
 - Listen-Cache (Betreff/Absender der ersten Seite) unverschlüsselt im Cache-Ordner (unverändert, bewusst).
 - Echte WebViews (WKWebView/WebView2): CSP-Erbschaft, Bilder laden, Link-/Meta-Entschärfung; native Dialoge (Abbrechen bricht ab); Schlüsselbund/Credential Manager; signierter Updater-Download und Neustart; Windows-Sperren beim Umbenennen (Virenscanner, OneDrive, offene Datei); Firmen-CAs aus dem Systemspeicher; Timeout bei gekapptem Netz auf echter Hardware; Ruhezustand. → Checkliste § 5, Abschnitt „Runde 2“.
+
+## 8. Runde 2 – Verifikation (unabhängiger Prüfer, 2026-10-20)
+
+Geprüft: Diff `aa1a93c..05a9473` (R1–R12), alle Tests selbst neu ausgeführt, geänderte Abläufe im Dev-Mock (headless Chromium) und gegen GreenMail durchgespielt, L1–L13 an weiteren Stellen nachgesehen.
+
+### 8.1 Bestätigt
+
+R1 (rustls 0.23 aus dem vorhandenen Baum, rustls 0.22/webpki 0.102 weg, STARTTLS ohne Klartext-Rückfall, Byte-weises Lesen vor dem Handshake), R2 (Timeouts, Session nach jedem Protokollfehler verworfen), R3, R4, R5, R6, R7, R9, R10, R11, R12 — Code gelesen, Tests grün. R8 im Grundsatz bestätigt, aber umgehbar (W1/W2).
+
+### 8.2 Neu gefunden und behoben
+
+| # | Schwere | Befund | Behebung |
+|---|---|---|---|
+| W1 | mittel (L7) | Die `http-equiv`-Entschärfung aus R8 suchte das Tag mit `<meta\b[^>]*>` — ein `>` in einem Attributwert *vor* `http-equiv` beendete die Suche zu früh: `<meta content="0;url=…?a>b" http-equiv="refresh">` blieb wirksam (Node-Test, reproduziert). | Kleiner Tokenizer nach HTML-Regeln (`defuseHttpEquiv` in `src/mailHtml.ts`: Werte in "…"/'…', Namensende an Leerraum `/` `>` `=`, linear). In Chromium per `DOMParser` gegen 9 Vektoren geprüft: nur noch die zwei eigenen `http-equiv`-Metas. |
+| W2 | mittel (L7) | `<link http-equiv="refresh" content="0;url=…">` aus der Mail wurde von mailbox selbst zu `<meta data-link http-equiv="refresh" …>` umgebaut — also zu einer *aktiven* Weiterleitung (die `http-equiv`-Ersetzung lief vor der `<link>`→`<meta>`-Umwandlung und nur auf `<meta>`). | Der Tokenizer entschärft `<meta>` **und** `<link>` vor der Umwandlung. Neue Prüfungen in `scripts/mailhtml.test.ts`. (Chromium sperrt refresh in der Sandbox ohnehin; WebKit laut Spezifikation ebenso — Verteidigung in der Tiefe.) |
+| W3 | niedrig (L9) | Konto löschen, während ein Befehl auf dessen Session wartet: `SessionPool::with` hatte das Konto schon gelesen und verband nach dem `drop_session` neu (Session hing bis Programmende am gelöschten Konto); `do_list` schrieb danach den Listen-Cache (Betreff/Absender) neu in den eben gelöschten Cache-Ordner. | `with` prüft das Konto nach dem Warten auf die Session erneut; `do_list` schreibt den Cache nur, wenn das Konto noch existiert. |
+| W4 | niedrig (L5) | R5 schreibt Anhänge über `.{Name}.mailbox-{pid}.part`: bei langen Namen (≥ ~235 Bytes) sprengte der Temp-Name die 255er-Grenze (APFS/NTFS) → Speichern scheiterte, wo direktes Schreiben ging; zwei gleichzeitige Speichervorgänge desselben Namens teilten sich die Temp-Datei; in Ordnern ohne Anlegerecht (nur die gewählte Datei freigegeben) scheiterte es ganz. | Temp-Name aus höchstens 32 Zeichen + PID + laufender Nummer; bei `PermissionDenied` beim Anlegen direkt in die gewählte Datei (Verhalten bis 1.0). Unit-Tests: 250-Byte-Name, Ordner ohne Schreibrecht. |
+| W5 | niedrig (L8) | `do_save_account` hielt die Kontenliste gesperrt, während es den Schlüsselbund schrieb — eine System-Rückfrage hätte jeden Befehl blockiert, der die Liste braucht, auch das synchrone `list_accounts` auf dem UI-Thread. | Schlüsselbund außerhalb der Sperre; wurde das Konto währenddessen gelöscht, wird es nicht wieder angelegt und das Passwort entfernt. |
+| W6 | niedrig (L9) | R7 schützte nur gegen Weiterklicken. Nach Ordnerwechsel/Löschen/ersetztem Entwurf lief eine noch ausstehende `get_message`-Antwort weiter und markierte die verlassene Nachricht still als gelesen (im Mock mit verzögerter Antwort reproduziert: `set_flag seen` für UID 3). | `clearDetail()` verwirft ausstehende Antworten (Zähler) an allen Stellen, die die Anzeige leeren. Neue Sweep-Prüfungen mit `window.__mockDelay` (Negativkontrolle ohne Fix: FAIL). |
+
+### 8.3 Selbst ausgeführt (nach den Fixes)
+
+| Prüfung | Ergebnis |
+|---|---|
+| `cargo test --workspace` | mailbox 21 + 5 ignoriert, core 18 — grün |
+| `cargo test -p mailbox -- --ignored e2e` gegen GreenMail 2.1.0 (Docker, 23025/23143/23993) | 4/4 inkl. `e2e_tls_self_signed_rejected` |
+| `cargo test -p mailbox -- --ignored net_tls` (Gmail 993, GMX 143 STARTTLS, badssl) | grün |
+| `cargo clippy --workspace --all-targets` | 0 Warnungen |
+| Windows-Typecheck (`x86_64-pc-windows-msvc`, `--workspace --tests`, ohne Linken) | grün |
+| `cargo audit` | unverändert: nur S12 (zip) + „unmaintained“ |
+| `pnpm build`, `pnpm test` | grün; 33 Prüfungen |
+| `scripts/ui-smoke/ui.mjs` | 38/38, 0 Konsolenfehler |
+| `scripts/ui-smoke/sweep.mjs` | 143/143 (neu: langsame ältere Antwort, Ordnerwechsel ohne stilles Gelesen-Markieren) |
+| Chromium-`DOMParser` gegen 9 `http-equiv`-Vektoren | 9/9 entschärft (vorher 2 wirksam) |
+
+### 8.4 Nicht widerlegt, aber Restrisiko / Hinweis
+
+- Timeout ohne Wiederholung (R2): Nach WLAN-Wechsel *innerhalb* von 4 Minuten Leerlauf wartet der erste Befehl bis zu 100 s, bevor „Zeitüberschreitung“ kommt; der nächste Befehl verbindet neu. Bewusst so (nicht idempotente Befehle), auf echter Hardware zu bewerten.
+- Passwortänderung mit fehlschlagendem Schreiben von `accounts.json`: der neue Schlüsselbund-Eintrag bleibt (das alte Passwort wird nicht zurückgeschrieben). Selten, beim nächsten Speichern behoben.
+- macOS-Datenschutz (TCC): ob das Anlegen der `.part`-Datei neben der im Dialog gewählten Datei in Downloads/Dokumente/Schreibtisch eine Abfrage auslöst, ist nur auf echter Hardware prüfbar (Checkliste § 5, W4); gespeichert wird in jedem Fall.
+- Weiterhin nur auf echter Hardware: alles aus § 7.4.
+

@@ -230,7 +230,10 @@ handlers['plugin:dialog|message'] = (a) => {
     if (failMsg) return new Promise((_, rej) => setTimeout(() => rej(failMsg), 60));
     const h = handlers[cmd];
     if (!h) return Promise.reject(`mock: unbekanntes Kommando ${cmd}`);
-    return new Promise((res) => setTimeout(() => res(h(args)), 60));
+    // Antwortzeiten für Reihenfolge-Tests: window.__mockDelay = { kommando: ms | (args) => ms }
+    const d = (w.__mockDelay as Record<string, number | ((a: Args) => number)> | undefined)?.[cmd];
+    const ms = typeof d === 'function' ? d(args) : (d ?? 60);
+    return new Promise((res) => setTimeout(() => res(h(args)), ms));
   },
   transformCallback: (cb: (r: unknown) => void) => {
     const id = Math.floor(Math.random() * 1e9);

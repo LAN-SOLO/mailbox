@@ -131,6 +131,20 @@ await waitFor(`document.querySelectorAll('.msg').length === 3`, 20000);
 await key('Escape'); await sleep(100);
 await click('.msg', 'Angebot Q4'); await click('.msg', 'Willkommen'); await sleep(500);
 ok('fast clicking shows the last message', (await ev(`document.querySelector('.readhead h1')?.textContent ?? ''`)).includes('Willkommen'));
+// Verifikation Runde 2: die ältere Antwort kommt *später* (langsamer Server) —
+// sie darf weder die zuletzt geklickte Nachricht noch die Ansicht nach einem
+// Ordnerwechsel überschreiben.
+const h1 = () => ev(`document.querySelector('.readhead h1')?.textContent ?? ''`);
+await ev(`window.__mockDelay = { get_message: (a) => (a.uid === 3 ? 700 : 60) }; true`);
+await click('.msg', 'Re: Terminvorschlag'); await sleep(300);
+await click('.msg', 'Angebot Q4'); await click('.msg', 'Willkommen'); await sleep(1000);
+ok('slow older reply does not replace the last clicked message', (await h1()).includes('Willkommen'), await h1());
+// … und nach einem Ordnerwechsel die verlassene Nachricht nicht still als gelesen markieren
+await ev(`(() => { const T = window.__TAURI_INTERNALS__; if (!T.__orig) { T.__orig = T.invoke; T.invoke = (c, a) => { if (c === 'set_flag') (window.__flagCalls ??= []).push(a); return T.__orig(c, a); }; } window.__flagCalls = []; return true; })()`);
+await click('.msg', 'Angebot Q4'); await sleep(100);
+await click('.sb-folder', 'Entw'); await sleep(1000);
+ok('slow reply after a folder switch marks nothing read', (await ev(`window.__flagCalls.length`)) === 0, JSON.stringify(await ev(`window.__flagCalls`)));
+await ev(`window.__mockDelay = {}; true`);
 
 console.log('console errors:', b.logs.filter((l) => !/favicon|X-FAIL|fehlgeschlagen|failed|Timeout|Zeitüberschreitung/.test(l)));
 console.log(fail ? `${fail} FAILURES` : 'ALL OK');

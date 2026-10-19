@@ -34,6 +34,7 @@ UI ohne Mail-Server: `pnpm dev` und `http://localhost:1433/?mock` (Dev-Mock `src
 `&lang=en&theme=light&mode=expert&update` für Sprache, Hell-Modus, Expertenmodus und Update-Hinweis).
 Der Mock bildet plugin-dialog 2.7 nach: `window.confirm/alert/prompt` sind dort wirkungslose Promises,
 Rückfragen laufen nur über `plugin:dialog|message`. Fehlerfälle: `window.__mockFail = { kommando: 'Meldung' }`.
+Antwortzeiten für Reihenfolge-Tests: `window.__mockDelay = { kommando: ms | (args) => ms }`.
 
 ```sh
 node scripts/ui-smoke/ui.mjs                                     # Abläufe (38 Prüfungen)

@@ -141,13 +141,18 @@ pub async fn save_account(st: State<'_, Shared>, input: AccountInput) -> Result<
 
 pub(crate) fn do_save_account(st: &AppState, input: AccountInput) -> Result<Account, String> {
     let input = validate_input(input)?;
-    let mut accounts = st.accounts.lock().unwrap();
-    let existing = input.id.as_ref().and_then(|id| accounts.iter().find(|a| &a.id == id).cloned());
+    let existing = {
+        let accounts = st.accounts.lock().unwrap();
+        input.id.as_ref().and_then(|id| accounts.iter().find(|a| &a.id == id).cloned())
+    };
     let id = existing
         .as_ref()
         .map(|a| a.id.clone())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let password = input.password.clone().filter(|p| !p.is_empty());
+    // Schlüsselbund ohne gehaltene Kontenliste: eine Rückfrage des Systems
+    // („mailbox möchte auf den Schlüsselbund zugreifen“) hielte sonst jeden
+    // Befehl auf, der die Liste braucht — auch synchrone auf dem UI-Thread.
     let stored = match (&password, &existing) {
         (Some(p), _) => accounts::store_password(&st.config_dir, &id, p)?,
         (None, Some(e)) => e.password_stored.clone(),
@@ -156,6 +161,13 @@ pub(crate) fn do_save_account(st: &AppState, input: AccountInput) -> Result<Acco
     let mut acc = input.into_account(id.clone(), stored);
     if acc.name.trim().is_empty() {
         acc.name = acc.email.clone();
+    }
+    let mut accounts = st.accounts.lock().unwrap();
+    if existing.is_some() && !accounts.iter().any(|a| a.id == id) {
+        // Währenddessen gelöscht: nicht wieder anlegen.
+        drop(accounts);
+        accounts::delete_password(&st.config_dir, &id);
+        return Err(tr("Konto nicht gefunden", "Account not found"));
     }
     let before = accounts.clone();
     if let Some(pos) = accounts.iter().position(|a| a.id == id) {
@@ -496,7 +508,9 @@ pub(crate) fn do_list(
                 from_cache: false,
             })
         })?;
-        if offset == 0 {
+        // Konto inzwischen gelöscht → keinen Cache neu anlegen (Betreffzeilen
+        // eines entfernten Kontos blieben sonst unverschlüsselt liegen).
+        if offset == 0 && st.account(account_id).is_ok() {
             let _ = save_cache(
                 &cache_path,
                 &CachedPage { total: page.total, messages: page.messages.clone() },
@@ -838,10 +852,26 @@ pub(crate) fn write_file_safely(path: &std::path::Path, bytes: &[u8]) -> Result<
         };
         format!("{}: {e}{hint}", tr("Speichern fehlgeschlagen", "Saving failed"))
     };
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let tmp = path.with_file_name(format!(".{name}.mailbox-{}.part", std::process::id()));
+    // Temp-Name kurz halten (lange Anhangsnamen + Zusatz sprengten sonst die
+    // 255er-Grenze von APFS/NTFS) und je Aufruf eindeutig (zwei gleichzeitige
+    // Speichervorgänge in denselben Ordner).
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let short: String = path
+        .file_name()
+        .map(|n| n.to_string_lossy().chars().take(32).collect())
+        .unwrap_or_default();
+    let tmp = path.with_file_name(format!(".{short}.mailbox-{}-{seq}.part", std::process::id()));
     let res = (|| {
-        let mut f = std::fs::File::create(&tmp)?;
+        let mut f = match std::fs::File::create(&tmp) {
+            Ok(f) => f,
+            // Nur die gewählte Datei ist freigegeben, nicht der Ordner (macOS-
+            // Datenschutz für Downloads/Dokumente/Schreibtisch nach „Nein“,
+            // Ablagen mit reinem Schreibrecht auf die Datei): direkt schreiben
+            // wie bis 1.0 — besser als gar nicht speichern.
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return std::fs::write(path, bytes),
+            Err(e) => return Err(e),
+        };
         f.write_all(bytes)?;
         f.sync_all()?;
         drop(f);
@@ -1039,6 +1069,30 @@ mod tests {
         let err = write_file_safely(&d, b"x").unwrap_err();
         assert!(err.contains("Speichern fehlgeschlagen") || err.contains("Saving failed"), "{err}");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        // Langer Name (250 Bytes): der Temp-Name darf die 255er-Grenze nicht sprengen.
+        let long = dir.join(format!("{}.pdf", "a".repeat(246)));
+        write_file_safely(&long, b"lang").unwrap();
+        assert_eq!(std::fs::read(&long).unwrap(), b"lang");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Ordner ohne Schreibrecht, Datei selbst beschreibbar (wie eine per
+    /// Dialog freigegebene Datei in einem geschützten Ordner): direkt schreiben.
+    #[cfg(unix)]
+    #[test]
+    fn attachment_falls_back_when_folder_is_not_writable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("mailbox-ro-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("Rechnung.pdf");
+        std::fs::write(&p, b"alt").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let r = write_file_safely(&p, b"neu");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        r.unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"neu");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
