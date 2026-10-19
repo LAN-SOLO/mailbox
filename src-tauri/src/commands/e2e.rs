@@ -471,3 +471,51 @@ fn e2e_tls_self_signed_rejected() {
     let err = crate::imap::open("localhost", p, Security::Tls).expect_err("selbst signiert darf nicht verbinden");
     assert!(err.contains("TLS"), "{err}");
 }
+
+/// Runde 3: endgültiges Löschen entfernt nur die gemeinten Nachrichten,
+/// auch wenn im Ordner schon andere \\Deleted tragen; Probe (NOOP) nach
+/// Leerlauf auf echter Verbindung.
+#[test]
+#[ignore]
+fn e2e_round3_expunge_and_probe() {
+    let st = state(vec![account("t", "test")]);
+    let folder = format!("R3-{}", std::process::id());
+    st.pool.with(&st, "t", |s| s.create(&folder)).unwrap();
+    for subj in ["R3 meins", "R3 fremd", "R3 bleibt"] {
+        let raw = format!("From: a@lan-solo.test\r\nTo: test@lan-solo.test\r\nSubject: {subj}\r\n\r\nx\r\n");
+        st.pool.with(&st, "t", |s| s.append(&folder, raw.as_bytes()).finish()).unwrap();
+    }
+    let msgs = list(&st, "t", &folder);
+    let uid = |subj: &str| msgs.iter().find(|m| m.subject == subj).unwrap().uid;
+    let (mine, foreign) = (uid("R3 meins"), uid("R3 fremd"));
+    // Ein anderes Programm hat „fremd“ schon als gelöscht markiert.
+    st.pool
+        .with(&st, "t", |s| {
+            s.select(&folder)?;
+            s.uid_store(foreign.to_string(), "+FLAGS.SILENT (\\Deleted)")?;
+            Ok(())
+        })
+        .unwrap();
+    // Leerlauf > 30 s vortäuschen: der nächste Befehl prüft erst per NOOP.
+    st.pool.age("t", std::time::Duration::from_secs(60));
+    st.pool
+        .read(&st, "t", |s| {
+            s.select(&folder)?;
+            expunge_uids(s, &[mine])
+        })
+        .unwrap();
+    let left = list(&st, "t", &folder);
+    let subjects: Vec<_> = left.iter().map(|m| m.subject.as_str()).collect();
+    assert!(!subjects.contains(&"R3 meins"), "{subjects:?}");
+    assert!(subjects.contains(&"R3 fremd") && subjects.contains(&"R3 bleibt"), "{subjects:?}");
+    let flags = st
+        .pool
+        .with(&st, "t", |s| {
+            s.select(&folder)?;
+            let f = s.uid_fetch(foreign.to_string(), "(UID FLAGS)")?;
+            Ok(f.iter().any(|x| x.flags().contains(&Flag::Deleted)))
+        })
+        .unwrap();
+    assert!(flags, "\\Deleted von „fremd“ muss erhalten bleiben");
+    st.pool.with(&st, "t", |s| { let _ = s.examine("INBOX"); s.delete(&folder) }).unwrap();
+}

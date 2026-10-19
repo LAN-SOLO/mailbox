@@ -323,29 +323,38 @@ export function Compose({
     }
   };
 
-  // Tastatur im Textfeld: ⌘⏎ senden, ⌘S Entwurf (beide Modi); Formatierung
-  // nur im Expertenmodus.
+  // Editor-weit (auch aus An/Betreff und in der Vorschau, in der es kein
+  // Textfeld gibt): ⌘⏎ senden, ⌘S Entwurf (beide Modi), ⌘⇧P Vorschau
+  // (Experte). Bis 1.0 hingen die Kürzel am Textfeld und wirkten sonst nicht.
+  const keys = useRef<(e: KeyboardEvent) => void>(() => {});
+  keys.current = (e: KeyboardEvent) => {
+    const mod = IS_MAC ? e.metaKey : e.ctrlKey;
+    if (!mod || e.altKey || e.defaultPrevented) return;
+    // Handbuch offen → die Kürzel gehören nicht dem Editor darunter.
+    if (document.querySelector('.hlp-overlay')) return;
+    const k = e.key.toLowerCase();
+    if (k === 'enter') send();
+    else if (k === 's' && !e.shiftKey) saveDraft();
+    else if (k === 'p' && e.shiftKey && expert) setPreview((p) => !p);
+    else return;
+    e.preventDefault();
+  };
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => keys.current(e);
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, []);
+
+  // Formatierung im Textfeld (nur Experte).
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     const mod = IS_MAC ? e.metaKey : e.ctrlKey;
-    if (!mod) return;
+    if (!mod || !expert) return;
     const k = e.key.toLowerCase();
-    if (k === 'enter') {
-      e.preventDefault();
-      send();
-      return;
-    }
-    if (k === 's' && !e.shiftKey) {
-      e.preventDefault();
-      saveDraft();
-      return;
-    }
-    if (!expert) return;
     if (k === 'b') wrap('**');
     else if (k === 'i') wrap('_');
     else if (k === 'e') wrap('`');
     else if (k === 'k') link();
     else if (k === 'x' && e.shiftKey) wrap('~~');
-    else if (k === 'p' && e.shiftKey) setPreview((p) => !p);
     else return;
     e.preventDefault();
   };

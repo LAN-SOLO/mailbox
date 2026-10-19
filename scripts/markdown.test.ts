@@ -19,6 +19,14 @@ eq('quote', markdownToHtml('> zitat\n> zwei'), '<blockquote><p>zitat<br>zwei</p>
 eq('hasMarkup plain', hasMarkup('Hallo Welt, wie geht es?'), false);
 eq('hasMarkup bold', hasMarkup('ein **wort**'), true);
 eq('wrap', wrapText('a '.repeat(50).trim(), 20).split('\n').every((l) => l.length <= 20), true);
+{
+  const long = 'wort '.repeat(30).trim();
+  const sig = 'Max Muster · Beispiel GmbH · Musterstraße 1 · 12345 Musterstadt · Tel. +49 000 000000';
+  const w = wrapText(`${long}\n\n\`\`\`\n${long}\n\`\`\`\n\n-- \n${sig}`).split('\n');
+  eq('wrap body', w.slice(0, w.indexOf('')).every((l) => l.length <= 72), true);
+  eq('wrap keeps code block', w.includes(long), true);
+  eq('wrap keeps signature', w[w.length - 1], sig);
+}
 eq('stripQuotes', stripQuotes('Hi\n\nAm Mo schrieb X:\n> a\n> b'), 'Hi');
 eq('toggleQuote', toggleQuote(toggleQuote('a\nb')), 'a\nb');
 eq('escape', escapeHtml('<"&>'), '&lt;&quot;&amp;&gt;');

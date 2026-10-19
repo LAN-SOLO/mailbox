@@ -21,6 +21,7 @@ use mailbox_core::Security;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
@@ -32,6 +33,7 @@ const STALE_AFTER: Duration = Duration::from_secs(4 * 60);
 
 struct Pooled {
     session: ImapSession,
+    knob: TimeoutKnob,
     last_used: SystemTime,
 }
 
@@ -104,27 +106,88 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 /// Abrufe laufen beliebig lange, solange Daten fließen.
 pub(crate) const IO_TIMEOUT: Duration = Duration::from_secs(100);
 
-/// TLS-Datenstrom für die imap-Bibliothek (braucht `SetReadTimeout`).
-struct TlsStream(rustls::StreamOwned<rustls::ClientConnection, TcpStream>);
+/// Gemeinsamer Regler für das Lese-/Schreib-Timeout einer Verbindung
+/// (Millisekunden). Der Pool setzt ihn für die kurze NOOP-Probe herab; der
+/// Datenstrom übernimmt den Wert vor der nächsten Socket-Operation. Die
+/// imap-Bibliothek gibt ihren Strom nicht heraus, deshalb dieser Umweg.
+#[derive(Clone)]
+pub(crate) struct TimeoutKnob(Arc<AtomicU64>);
 
-impl Read for TlsStream {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.0.read(buf)
+impl TimeoutKnob {
+    fn new(d: Duration) -> Self {
+        TimeoutKnob(Arc::new(AtomicU64::new(d.as_millis() as u64)))
+    }
+    fn set(&self, d: Duration) {
+        self.0.store(d.as_millis().max(1) as u64, Ordering::SeqCst);
     }
 }
 
-impl Write for TlsStream {
+enum Inner {
+    Plain(TcpStream),
+    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
+}
+
+/// Datenstrom für die imap-Bibliothek (Klartext oder TLS) mit verstellbarem
+/// Timeout (braucht `SetReadTimeout`).
+struct Stream {
+    inner: Inner,
+    knob: TimeoutKnob,
+    applied: u64,
+}
+
+impl Stream {
+    fn new(inner: Inner, knob: TimeoutKnob) -> Self {
+        let applied = knob.0.load(Ordering::SeqCst);
+        Stream { inner, knob, applied }
+    }
+    fn sock(&self) -> &TcpStream {
+        match &self.inner {
+            Inner::Plain(s) => s,
+            Inner::Tls(t) => &t.sock,
+        }
+    }
+    /// Timeout aus dem Regler übernehmen, falls er sich geändert hat.
+    fn sync(&mut self) -> io::Result<()> {
+        let want = self.knob.0.load(Ordering::SeqCst);
+        if want != self.applied {
+            let d = Some(Duration::from_millis(want.max(1)));
+            self.sock().set_read_timeout(d)?;
+            self.sock().set_write_timeout(d)?;
+            self.applied = want;
+        }
+        Ok(())
+    }
+}
+
+impl Read for Stream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.sync()?;
+        match &mut self.inner {
+            Inner::Plain(s) => s.read(buf),
+            Inner::Tls(t) => t.read(buf),
+        }
+    }
+}
+
+impl Write for Stream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.write(buf)
+        self.sync()?;
+        match &mut self.inner {
+            Inner::Plain(s) => s.write(buf),
+            Inner::Tls(t) => t.write(buf),
+        }
     }
     fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
+        match &mut self.inner {
+            Inner::Plain(s) => s.flush(),
+            Inner::Tls(t) => t.flush(),
+        }
     }
 }
 
-impl SetReadTimeout for TlsStream {
+impl SetReadTimeout for Stream {
     fn set_read_timeout(&mut self, timeout: Option<Duration>) -> imap::Result<()> {
-        self.0.sock.set_read_timeout(timeout).map_err(imap::Error::Io)
+        self.sock().set_read_timeout(timeout).map_err(imap::Error::Io)
     }
 }
 
@@ -188,14 +251,14 @@ fn tls_msg(e: impl std::fmt::Display) -> String {
 
 /// TLS-Handshake vollständig hier — Zertifikatsfehler zeigen sich so beim
 /// Verbinden, nicht erst beim ersten Befehl.
-fn tls_wrap(host: &str, mut tcp: TcpStream) -> Result<TlsStream, String> {
+fn tls_wrap(host: &str, mut tcp: TcpStream) -> Result<Inner, String> {
     let name = rustls::pki_types::ServerName::try_from(host.to_string())
         .map_err(|_| format!("{} „{host}“", tr("Ungültiger Servername", "Invalid server name")))?;
     let mut conn = rustls::ClientConnection::new(tls_config(), name).map_err(tls_msg)?;
     while conn.is_handshaking() {
         conn.complete_io(&mut tcp).map_err(|e| if is_timeout(&e) { timeout_msg() } else { tls_msg(e) })?;
     }
-    Ok(TlsStream(rustls::StreamOwned::new(conn, tcp)))
+    Ok(Inner::Tls(Box::new(rustls::StreamOwned::new(conn, tcp))))
 }
 
 /// Eine Zeile (bis LF) direkt vom Socket lesen — Byte für Byte, damit vor
@@ -222,7 +285,7 @@ fn read_line_raw(tcp: &mut TcpStream) -> io::Result<String> {
 /// STARTTLS (RFC 3501 6.2.1): Begrüßung lesen, STARTTLS senden, auf das
 /// getaggte OK warten, dann TLS. Ohne OK wird abgebrochen — nie im Klartext
 /// weiter.
-fn starttls(host: &str, mut tcp: TcpStream) -> Result<TlsStream, String> {
+fn starttls(host: &str, mut tcp: TcpStream) -> Result<Inner, String> {
     let greeting = read_line_raw(&mut tcp).map_err(|e| io_msg(&e))?;
     if !greeting.to_ascii_uppercase().starts_with("* OK") {
         return Err(format!(
@@ -245,18 +308,26 @@ fn starttls(host: &str, mut tcp: TcpStream) -> Result<TlsStream, String> {
 }
 
 /// Verbindung bis vor den Login: Datenstrom je nach Verschlüsselung, die
-/// Begrüßung ist gelesen.
+/// Begrüßung ist gelesen. (Nur Tests; die App geht über [`connect`].)
+#[cfg(test)]
 pub(crate) fn open(host: &str, port: u16, security: Security) -> Result<Client<Connection>, String> {
-    open_with(host, port, security, IO_TIMEOUT)
+    open_with(host, port, security, IO_TIMEOUT).map(|(c, _)| c)
 }
 
-fn open_with(host: &str, port: u16, security: Security, io_timeout: Duration) -> Result<Client<Connection>, String> {
+fn open_with(
+    host: &str,
+    port: u16,
+    security: Security,
+    io_timeout: Duration,
+) -> Result<(Client<Connection>, TimeoutKnob), String> {
     let tcp = tcp_connect(host, port, io_timeout).map_err(|m| conn_err(host, port, m))?;
-    let stream: Connection = match security {
-        Security::Tls => Box::new(tls_wrap(host, tcp).map_err(|m| conn_err(host, port, m))?),
-        Security::Starttls => Box::new(starttls(host, tcp).map_err(|m| conn_err(host, port, m))?),
-        Security::None => Box::new(tcp),
+    let inner = match security {
+        Security::Tls => tls_wrap(host, tcp).map_err(|m| conn_err(host, port, m))?,
+        Security::Starttls => starttls(host, tcp).map_err(|m| conn_err(host, port, m))?,
+        Security::None => Inner::Plain(tcp),
     };
+    let knob = TimeoutKnob::new(io_timeout);
+    let stream: Connection = Box::new(Stream::new(inner, knob.clone()));
     let mut client = Client::new(stream);
     if security == Security::Starttls {
         // Die Begrüßung kam schon im Klartext.
@@ -264,19 +335,39 @@ fn open_with(host: &str, port: u16, security: Security, io_timeout: Duration) ->
     } else {
         client.read_greeting().map_err(|e| conn_err(host, port, readable(&e)))?;
     }
-    Ok(client)
+    Ok((client, knob))
 }
 
 /// Neue Verbindung inkl. Login.
 pub fn connect(acc: &Account, password: &str) -> Result<ImapSession, String> {
-    let client = open(&acc.imap_host, acc.imap_port, acc.imap_security)?;
-    client
-        .login(&acc.username, password)
-        .map_err(|(e, _)| match &e {
-            imap::Error::No(no) => format!("{}: {}", tr("Login fehlgeschlagen", "Login failed"), no.information),
-            other => format!("{}: {}", tr("Login fehlgeschlagen", "Login failed"), readable(other)),
-        })
+    connect_knob(acc, password).map(|(s, _)| s)
 }
+
+fn connect_knob(acc: &Account, password: &str) -> Result<(ImapSession, TimeoutKnob), String> {
+    let (client, knob) = open_with(&acc.imap_host, acc.imap_port, acc.imap_security, IO_TIMEOUT)?;
+    let session = client.login(&acc.username, password).map_err(|(e, _)| match &e {
+        imap::Error::No(no) => format!("{}: {}", tr("Login fehlgeschlagen", "Login failed"), no.information),
+        other => format!("{}: {}", tr("Login fehlgeschlagen", "Login failed"), readable(other)),
+    })?;
+    Ok((session, knob))
+}
+
+/// Ob ein Befehl nach einer Zeitüberschreitung gefahrlos auf einer neuen
+/// Verbindung wiederholt werden darf (Lesen, Flags setzen) — oder nicht
+/// (Verschieben, Anhängen, Löschen: der erste Versuch kann schon durch sein).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Retry {
+    Idempotent,
+    Once,
+}
+
+/// Probe (NOOP) mit kurzem Timeout, bevor eine Session wiederbenutzt wird,
+/// die länger als [`PROBE_AFTER`] ruhte: Nach WLAN-Wechsel ist die alte
+/// TCP-Verbindung oft tot, ohne dass es jemand merkt — statt 100 s auf den
+/// eigentlichen Befehl zu warten, fällt das nach höchstens [`PROBE_TIMEOUT`]
+/// auf, und der Befehl läuft auf einer neuen Verbindung.
+const PROBE_AFTER: Duration = Duration::from_secs(30);
+pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 
 impl SessionPool {
     fn slot(&self, account_id: &str) -> Slot {
@@ -297,12 +388,44 @@ impl SessionPool {
         }
     }
 
+    /// Test: Session künstlich altern lassen (Probe/Neuaufbau auslösen).
+    #[cfg(test)]
+    pub(crate) fn age(&self, account_id: &str, by: Duration) {
+        if let Some(p) = self.slot(account_id).lock().unwrap().as_mut() {
+            p.last_used -= by;
+        }
+    }
+
     /// Führt `f` auf der Session des Kontos aus; bei Verbindungsfehlern wird
-    /// einmal neu verbunden und wiederholt.
+    /// einmal neu verbunden und wiederholt — nach einer Zeitüberschreitung
+    /// nur, wenn der Befehl idempotent ist ([`SessionPool::with`] ist
+    /// [`Retry::Once`]: kein zweiter Versuch nach Timeout).
     pub fn with<T>(
         &self,
         st: &AppState,
         account_id: &str,
+        f: impl FnMut(&mut ImapSession) -> imap::Result<T>,
+    ) -> Result<T, String> {
+        self.run(st, account_id, Retry::Once, f)
+    }
+
+    /// Wie [`SessionPool::with`], aber für lesende/idempotente Befehle: auch
+    /// nach einer Zeitüberschreitung auf einer weiterbenutzten Verbindung
+    /// wird einmal mit neuer Verbindung wiederholt.
+    pub fn read<T>(
+        &self,
+        st: &AppState,
+        account_id: &str,
+        f: impl FnMut(&mut ImapSession) -> imap::Result<T>,
+    ) -> Result<T, String> {
+        self.run(st, account_id, Retry::Idempotent, f)
+    }
+
+    fn run<T>(
+        &self,
+        st: &AppState,
+        account_id: &str,
+        retry: Retry,
         mut f: impl FnMut(&mut ImapSession) -> imap::Result<T>,
     ) -> Result<T, String> {
         let account = st.account(account_id)?;
@@ -315,10 +438,18 @@ impl SessionPool {
             // Socket schließen, ohne auf eine Antwort zu warten.
             *guard = None;
         }
+        if guard.as_ref().is_some_and(|p| idle_longer_than(p.last_used, PROBE_AFTER)) {
+            let p = guard.as_mut().expect("session present");
+            if !probe(p, PROBE_TIMEOUT) {
+                *guard = None;
+            }
+        }
         for attempt in 0..2 {
-            if guard.is_none() {
+            let fresh = guard.is_none();
+            if fresh {
                 let password = accounts::get_password(&st.config_dir, &account)?;
-                *guard = Some(Pooled { session: connect(&account, &password)?, last_used: SystemTime::now() });
+                let (session, knob) = connect_knob(&account, &password)?;
+                *guard = Some(Pooled { session, knob, last_used: SystemTime::now() });
             }
             let pooled = guard.as_mut().expect("session present");
             let result = f(&mut pooled.session);
@@ -329,7 +460,7 @@ impl SessionPool {
                     if is_connection_error(&e) {
                         // Strom kaputt oder Protokoll aus dem Tritt: nie weiterbenutzen.
                         *guard = None;
-                        if attempt == 0 && !is_timeout_error(&e) {
+                        if attempt == 0 && should_retry(retry, is_timeout_error(&e), fresh) {
                             continue;
                         }
                     }
@@ -339,6 +470,29 @@ impl SessionPool {
         }
         Err(tr("Verbindung fehlgeschlagen", "Connection failed"))
     }
+}
+
+/// Zweiter Versuch nach einem Verbindungsfehler? Ohne Timeout immer (der
+/// Befehl kam nicht durch: Verbindung weg). Nach Timeout nur bei
+/// idempotenten Befehlen und nur, wenn die Verbindung schon älter war — eine
+/// eben aufgebaute, die schweigt, deutet auf den Server, nicht auf das Netz.
+fn should_retry(retry: Retry, timed_out: bool, fresh: bool) -> bool {
+    !timed_out || (retry == Retry::Idempotent && !fresh)
+}
+
+/// NOOP mit kurzem Timeout; danach gilt wieder [`IO_TIMEOUT`].
+fn probe(p: &mut Pooled, limit: Duration) -> bool {
+    p.knob.set(limit);
+    let ok = p.session.noop().is_ok();
+    p.knob.set(IO_TIMEOUT);
+    if ok {
+        p.last_used = SystemTime::now();
+    }
+    ok
+}
+
+fn idle_longer_than(last_used: SystemTime, d: Duration) -> bool {
+    SystemTime::now().duration_since(last_used).map(|x| x > d).unwrap_or(true)
 }
 
 fn is_stale(last_used: SystemTime) -> bool {
@@ -436,6 +590,48 @@ mod tests {
         assert!(err.contains("TLS"), "{err}");
         let err = open("self-signed.badssl.com", 443, Security::Tls).expect_err("selbst signiert muss scheitern");
         assert!(err.contains("TLS"), "{err}");
+    }
+
+    /// Fake-Server bis nach dem Login; danach antwortet er auf NOOP oder schweigt.
+    fn logged_in(answer_noop: bool) -> Pooled {
+        let port = fake_server(move |mut s| {
+            s.write_all(b"* OK fake\r\n").unwrap();
+            let login = read_cmd(&mut s);
+            let tag = login.split(' ').next().unwrap_or("").to_string();
+            s.write_all(format!("{tag} OK logged in\r\n").as_bytes()).unwrap();
+            let noop = read_cmd(&mut s);
+            if answer_noop {
+                let tag = noop.split(' ').next().unwrap_or("").to_string();
+                s.write_all(format!("{tag} OK noop\r\n").as_bytes()).unwrap();
+            }
+            thread::sleep(Duration::from_secs(3));
+        });
+        let (client, knob) = open_with("127.0.0.1", port, Security::None, IO_TIMEOUT).unwrap();
+        let session = client.login("u", "p").map_err(|(e, _)| e).unwrap();
+        Pooled { session, knob, last_used: SystemTime::now() }
+    }
+
+    #[test]
+    fn probe_detects_dead_connection_quickly() {
+        let mut dead = logged_in(false);
+        let t0 = std::time::Instant::now();
+        assert!(!probe(&mut dead, Duration::from_millis(300)));
+        assert!(t0.elapsed() < Duration::from_secs(2), "Probe hing {:?}", t0.elapsed());
+        // Danach gilt wieder das normale Timeout.
+        assert_eq!(dead.knob.0.load(Ordering::SeqCst), IO_TIMEOUT.as_millis() as u64);
+        let mut alive = logged_in(true);
+        assert!(probe(&mut alive, Duration::from_millis(1500)));
+    }
+
+    #[test]
+    fn retry_policy() {
+        // Verbindung weg (kein Timeout): immer ein zweiter Versuch.
+        assert!(should_retry(Retry::Once, false, false));
+        assert!(should_retry(Retry::Idempotent, false, true));
+        // Timeout: nur idempotent und nur auf einer älteren Verbindung.
+        assert!(!should_retry(Retry::Once, true, false));
+        assert!(should_retry(Retry::Idempotent, true, false));
+        assert!(!should_retry(Retry::Idempotent, true, true));
     }
 
     #[test]

@@ -186,7 +186,9 @@ const handlers: Record<string, (a: Args) => unknown> = {
     (window as unknown as Record<string, unknown>).__lastDelete = a;
   },
   empty_folder: () => undefined,
-  save_attachment: () => undefined,
+  save_attachment: (a) => {
+    (window as unknown as Record<string, unknown>).__lastSaveAttachment = a;
+  },
   send_message: (a) => {
     (window as unknown as Record<string, unknown>).__lastDraft = a.draft;
     console.log('[mock] send_message', JSON.stringify(a.draft));
@@ -196,8 +198,13 @@ const handlers: Record<string, (a: Args) => unknown> = {
     console.log('[mock] save_draft', JSON.stringify(a.draft));
   },
   'plugin:app|version': () => '1.0.0',
-  'plugin:dialog|open': () => ['/Users/mock/Documents/Bericht.pdf'],
-  'plugin:dialog|save': (a) => `/Users/mock/Downloads/${(a.options as { defaultPath?: string })?.defaultPath ?? 'x'}`,
+  // Wie das echte Plugin: Abbrechen im Datei-Dialog liefert null
+  // (window.__mockDialogCancel = true).
+  'plugin:dialog|open': () => ((window as unknown as Record<string, unknown>).__mockDialogCancel ? null : ['/Users/mock/Documents/Bericht.pdf']),
+  'plugin:dialog|save': (a) =>
+    (window as unknown as Record<string, unknown>).__mockDialogCancel
+      ? null
+      : `/Users/mock/Downloads/${(a.options as { defaultPath?: string })?.defaultPath ?? 'x'}`,
   'plugin:opener|open_url': (a) => {
     (window as unknown as Record<string, unknown>).__lastOpened = a.url;
   },

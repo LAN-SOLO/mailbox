@@ -2,11 +2,11 @@
 
 Mail-Client mit zwei Modi — IMAP/SMTP, lokal, ohne Konto-Zwang.
 
-- **Einfach:** Posteingang, Gesendet, Entwürfe, Papierkorb — lesen, antworten, weiterleiten, schreiben, löschen. Mehr nicht, weil mehr selten nötig ist.
+- **Einfach:** Posteingang, Gesendet, Entwürfe, Papierkorb, Spam, ggf. Archiv — lesen, antworten, weiterleiten, schreiben, löschen. Mehr nicht, weil mehr selten nötig ist.
 - **Experte:** vollständiger Ordnerbaum mit Zählern, Verschieben, Mehrfachauswahl, Server-Suche, Quelltext- und Header-Ansicht, Sammel-Posteingang, Tastaturkürzel.
 - **Konten:** Presets für gängige Anbieter, sonst `imap.`/`smtp.`-Heuristik — mit Verbindungstest vor dem Speichern.
 - **Privatsphäre:** externe Bilder in HTML-Mails sind blockiert, bis Sie sie laden; Passwörter liegen im Schlüsselbund des Systems.
-- **Verbindung:** IMAP-TLS über rustls 0.23 mit System-Zertifikatsspeicher + Mozilla-Wurzeln, STARTTLS ohne Klartext-Rückfall, Verbindungs-/Lese-Timeouts (20 s / 100 s) statt Hängern.
+- **Verbindung:** IMAP-TLS über rustls 0.23 mit System-Zertifikatsspeicher + Mozilla-Wurzeln, STARTTLS ohne Klartext-Rückfall, Verbindungs-/Lese-Timeouts (20 s / 100 s) statt Hängern, Kurzprobe (NOOP, 8 s) vor dem Wiederbenutzen einer ruhenden Verbindung, ein Wiederholungsversuch nur für lesende Befehle; endgültiges Löschen auch ohne UIDPLUS nur der gewählten Nachrichten.
 - **Versand:** SMTP mit Anhängen, Antwort-Threading (In-Reply-To/References), Kopie in „Gesendet“, Entwürfe auf dem Server (fortsetzbar), Weiterleiten mit den Originalanhängen, strenge Adressprüfung vor dem Senden.
 
 DE/EN, signierte In-App-Updates. Keine Telemetrie.
@@ -33,12 +33,13 @@ MAILBOX_E2E_SMTP_PORT=13025 MAILBOX_E2E_IMAP_PORT=13143 MAILBOX_E2E_IMAPS_PORT=1
 UI ohne Mail-Server: `pnpm dev` und `http://localhost:1433/?mock` (Dev-Mock `src/devmock.ts`;
 `&lang=en&theme=light&mode=expert&update` für Sprache, Hell-Modus, Expertenmodus und Update-Hinweis).
 Der Mock bildet plugin-dialog 2.7 nach: `window.confirm/alert/prompt` sind dort wirkungslose Promises,
-Rückfragen laufen nur über `plugin:dialog|message`. Fehlerfälle: `window.__mockFail = { kommando: 'Meldung' }`.
+Rückfragen laufen nur über `plugin:dialog|message`. Fehlerfälle: `window.__mockFail = { kommando: 'Meldung' }`; abgebrochene Datei-Dialoge: `window.__mockDialogCancel = true`.
 Antwortzeiten für Reihenfolge-Tests: `window.__mockDelay = { kommando: ms | (args) => ms }`.
 
 ```sh
 node scripts/ui-smoke/ui.mjs                                     # Abläufe (38 Prüfungen)
 node --experimental-strip-types scripts/ui-smoke/sweep.mjs       # DE/EN × dunkel/hell bei 900×580: Layout, Sprache, Fehleranzeigen
+node --experimental-strip-types scripts/ui-smoke/journeys.mjs    # Nutzerabläufe DE/⌘ + EN/Strg inkl. Fehlerfällen (68 Prüfungen)
 ```
 
 Der Rust-Kern (`core/`, Crate `mailbox-core`) ist Tauri-frei und testbar:

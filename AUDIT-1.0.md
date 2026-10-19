@@ -1,11 +1,11 @@
 # mailbox. 1.0 — Funktions- und Sicherheitsaudit
 
-Stand: 2026-10-20 (Runde 2, § 7; Verifikation § 8) · 2026-10-19 · Basis: `0864694` (v0.1.0 + Hilfe-Sprachumschalter) · Ziel: Test-Build 1.0.0 für macOS und Windows.
+Stand: 2026-10-20 (Runde 2, § 7; Verifikation § 8; Runde 3, § 9) · 2026-10-19 · Basis: `0864694` (v0.1.0 + Hilfe-Sprachumschalter) · Ziel: Test-Build 1.0.0 für macOS und Windows.
 
 Legende Teststatus:
 - **E2E** — automatisiert gegen einen echten IMAP/SMTP-Server (GreenMail 2.1.0 in Docker, `cargo test -p mailbox -- --ignored e2e`)
 - **Unit** — automatisierter Rust- bzw. Node-Test (`cargo test --workspace`, `pnpm test`)
-- **UI** — automatisiert im Dev-Mock über headless Chrome (`scripts/ui-smoke/ui.mjs`, 38 Prüfungen)
+- **UI** — automatisiert im Dev-Mock über headless Chrome (`scripts/ui-smoke/ui.mjs`, 38 Prüfungen; seit Runde 3 zusätzlich `journeys.mjs`, 68 Prüfungen)
 - **statisch** — nur Code-Review; braucht einen manuellen Test (Checkliste unten)
 
 ## 1. Feature-Inventar
@@ -127,8 +127,8 @@ WebKit (macOS) folgt laut Spezifikation demselben Erbschaftsmodell — **manuell
 
 ## 4. Bekannte Grenzen
 
-- ~~Keine Timeouts auf IMAP-Sockets~~ — seit Runde 2 behoben (20 s Verbindungsaufbau, 100 s je Lese-/Schreiboperation; § 7). Eine Operation, die nach dem Timeout abbricht, wird nicht automatisch wiederholt (MOVE/APPEND sind nicht idempotent).
-- Ohne UIDPLUS fällt endgültiges Löschen auf `EXPUNGE` des ganzen Ordners zurück (entfernt alle dort mit \Deleted markierten Nachrichten).
+- ~~Keine Timeouts auf IMAP-Sockets~~ — seit Runde 2 behoben (20 s Verbindungsaufbau, 100 s je Lese-/Schreiboperation; § 7). Seit Runde 3: Kurzprobe (NOOP, 8 s) vor dem Wiederbenutzen einer Verbindung nach > 30 s Leerlauf; lesende/idempotente Befehle werden nach Timeout einmal auf neuer Verbindung wiederholt, MOVE/APPEND/EXPUNGE/CREATE nicht (§ 9).
+- ~~Ohne UIDPLUS fällt endgültiges Löschen auf `EXPUNGE` des ganzen Ordners zurück~~ — seit Runde 3 nach RFC 4315 § 2.1: fremde \Deleted vorübergehend entfernt, `EXPUNGE`, zurückgesetzt (§ 9). Restrisiko: setzt ein *anderes* Programm genau zwischen `UID SEARCH DELETED` und `EXPUNGE` ein neues \Deleted, wird diese Nachricht mit entfernt (wie von jenem Programm beabsichtigt).
 - Kein IDLE (Push), kein Threading-Ansicht, kein OAuth2 (große Anbieter brauchen App-Passwörter), kein PGP/S/MIME.
 - Beim Weiterleiten im Klartext gehen eingebettete (cid-)Bilder des Originals nicht mit; normale Anhänge schon.
 - Der Listen-Cache (Betreff/Absender der ersten Seite) liegt unverschlüsselt im Cache-Ordner des Benutzers.
@@ -346,3 +346,75 @@ R1 (rustls 0.23 aus dem vorhandenen Baum, rustls 0.22/webpki 0.102 weg, STARTTLS
 - macOS-Datenschutz (TCC): ob das Anlegen der `.part`-Datei neben der im Dialog gewählten Datei in Downloads/Dokumente/Schreibtisch eine Abfrage auslöst, ist nur auf echter Hardware prüfbar (Checkliste § 5, W4); gespeichert wird in jedem Fall.
 - Weiterhin nur auf echter Hardware: alles aus § 7.4.
 
+
+## 9. Runde 3 (2026-10-20, abschließend)
+
+Basis: `ae38b50`. Ziel: jede Aussage in Handbuch (DE/EN), README und In-App-Texten gegen den Code prüfen, Nutzerabläufe Ende-zu-Ende durchspielen, die zwei Reste aus § 7/§ 8 (Timeout ohne Wiederholung, EXPUNGE ohne UIDPLUS) im Code beheben. „Ausgeführt“ heißt: selbst laufen lassen.
+
+### 9.1 Falsche Aussagen im Handbuch → Code behoben
+
+| # | Aussage (Handbuch) | Befund | Behebung / Nachweis |
+|---|---|---|---|
+| T1 | „⌘⏎ sendet, ⌘S speichert als Entwurf“, „Vorschau (⌘⇧P)“ | Die Kürzel hingen am Textfeld: aus An/Cc/Betreff wirkungslos; in der Vorschau gibt es kein Textfeld → ⌘⇧P kam nicht zurück, ⌘⏎/⌘S taten nichts. | Kürzel editorweit (`window`-Listener in `Compose.tsx`, gesperrt solange das Handbuch offen ist); Formatierung (⌘B/I/E/K/⇧X) bleibt am Textfeld. `journeys.mjs` J4/J6 (DE ⌘ / EN Strg mit `navigator.platform = Win32`); Negativkontrolle mit altem Code: 5 FAIL. |
+| T2 | „Umbruch 72 … Zitate und Signatur bleiben unangetastet“ | Nur die Trennzeile „-- “ blieb; lange Signaturzeilen und Code-Blöcke (```) wurden umgebrochen. | `wrapText`: ab „-- “ und in Code-Blöcken kein Umbruch. `pnpm test` (3 neue Prüfungen), J6. |
+| T3 | Einstellungen → Lesen: Seitengröße | Das Feld begrenzte bei jedem Tastendruck auf ≥ 10: „25“ tippen ergab über „2“ → „10“ dann „105“. | Begrenzung 10–500 erst beim Verlassen/Speichern; Abrufintervall 0–120 wie das Feld. J9. |
+
+### 9.2 Ungenaue Aussagen → Text korrigiert (DE+EN gleich)
+
+- Kürzel: Löschen auch mit ⌫ (Rückschritt) — so heißt die Löschtaste auf dem Mac; „u“ schaltet gelesen/ungelesen um (nicht nur „ungelesen“).
+- Ordner löschen per Rechtsklick nur für eigene Ordner; Rollen-Ordner (Posteingang, Gesendet, Entwürfe, Spam, Archiv) sind geschützt (Rechtsklick auf den Papierkorb leert ihn).
+- Einstellungen: Seitengröße 10–500, Abrufintervall 0–120 Minuten, Kürzel-Übersicht unter App nur im Expertenmodus.
+- README „Einfach“: auch Spam und ggf. Archiv (wie `SIMPLE_ROLES`).
+- Neu: Kurzprobe/Wiederholung und Löschen ohne UIDPLUS in „Neu in 1.0“, „Liste & Suche“, „Wenn etwas klemmt“.
+- DE/EN-Gleichstand maschinell geprüft: je Abschnitt gleiche Zahl an Absätzen und dieselben Zahlen (Ports, Sekunden, Grenzen).
+
+Bestätigt ohne Befund (Code gelesen, teils UI): Server-Vorschlag beim Verlassen des Adressfelds, Hinweis „Passwort liegt in einer Datei“ im Konto-Dialog, keyring mit `apple-native`/`windows-native` (kein Mock-Speicher), Filter (Einfach) nach Betreff/Absender, Text/HTML-Umschalter nur bei beiden Fassungen, Header/Quelltext mit Esc, Kürzel inaktiv in Eingabefeldern, Mehrfachauswahl für Löschen/Verschieben/Stern/gelesen, Rückfrage beim endgültigen Löschen immer, Signatur beim Öffnen des Editors, Zähler Zeichen/Wörter/Zeilen, Auto-Update beim Start, Seitenleisten-Stift (Experte) und Einstellungen → Konten.
+
+### 9.3 Reste behoben
+
+| # | Rest | Behebung | Nachweis |
+|---|---|---|---|
+| X1 | Timeout ohne Wiederholung: nach WLAN-Wechsel (< 4 min Leerlauf) wartete der erste Befehl bis zu 100 s. | `imap.rs`: eigener Datenstrom mit verstellbarem Timeout (`TimeoutKnob`, Klartext und TLS). Vor dem Wiederbenutzen einer Session mit > 30 s Leerlauf **NOOP mit 8 s**; scheitert sie, neue Verbindung und dann der eigentliche Befehl. `SessionPool::read` für idempotente Befehle (Ordnerliste, Liste, Suche, Nachricht/Anhang laden, Flags): nach Timeout auf einer *weiterbenutzten* Verbindung ein zweiter Versuch auf neuer Verbindung; auf einer eben aufgebauten nicht (dann liegt es am Server). `with` (MOVE, APPEND, EXPUNGE, CREATE, DELETE, Papierkorb leeren) unverändert ohne Wiederholung nach Timeout. | Unit: `probe_detects_dead_connection_quickly` (Mini-Server schweigt nach Login: Probe < 2 s falsch, danach wieder 100 s; antwortender Server: wahr), `retry_policy`; E2E `e2e_round3_expunge_and_probe` (Probe auf echter GreenMail-Verbindung nach künstlichem Leerlauf). Echte WLAN-Wechsel nur auf Hardware (Checkliste). |
+| X2 | Ohne UIDPLUS: endgültiges Löschen, Entwurf ersetzen und COPY-Rückfall beim Verschieben liefen auf `EXPUNGE` des ganzen Ordners — auch nach *jedem* `UID EXPUNGE`-Fehler (Verbindungsabbruch). | `expunge_uids` entscheidet nach CAPABILITY, nicht nach Fehler. Mit UIDPLUS `UID EXPUNGE`; ohne: `UID SEARCH DELETED`, fremde \Deleted vorübergehend entfernen, `EXPUNGE`, zurücksetzen (auch nach fehlgeschlagenem EXPUNGE). `do_move`-Rückfall nutzt dieselbe Funktion. | Unit `expunge_without_uidplus_spares_other_deleted_messages` (Skript-Server ohne UIDPLUS: genaue Befehlsfolge; mit UIDPLUS: nur `UID EXPUNGE`); E2E: fremde \Deleted-Nachricht bleibt samt Flag, Nachbar bleibt, nur die gemeinte verschwindet. |
+
+### 9.4 Nutzerabläufe (`scripts/ui-smoke/journeys.mjs`, neu)
+
+Je Durchlauf **DE mit macOS-Kürzeln (⌘)** und **EN mit Windows-Kürzeln (Strg)**, 34 Prüfungen × 2, headless Chromium gegen den Dev-Mock. Der Mock bildet nun auch das Abbrechen der Datei-Dialoge nach (`plugin:dialog|open/save` → `null`, wie plugin-dialog 2.7; `window.__mockDialogCancel`).
+
+| | Ablauf | Ergebnis |
+|---|---|---|
+| J1 | Erststart: Tutorial bis zum Ende, Neustart → nicht erneut | ok |
+| J2 | Konto anlegen: Server-Vorschlag beim Verlassen des Adressfelds, Verbindungstest IMAP+SMTP, Esc | ok |
+| J3 | Anhang speichern: Dialog abgebrochen (nichts geschrieben, kein Toast), **Platte voll** (os error 28), **schreibgeschützter Ordner** (13), **gesperrte Datei** (32, Windows-Hinweis) → Meldung; danach erfolgreich | ok (Fehlertexte aus dem Mock; die Rust-Seite dazu ist per Unit getestet: Ordner ohne Schreibrecht, Ziel ist Ordner, langer Name) |
+| J4 | Schreiben (Einfach): Signatur vorbelegt, Anhang-Dialog abgebrochen/gewählt, **⌘/Strg+⏎ aus dem Betreff** sendet mit Anhang | ok (vorher FAIL) |
+| J5 | Zeitüberschreitung beim Abrufen → Meldung in App-Sprache; erneut „Abrufen“ → Liste | ok |
+| J6 | Experte: Umbruch 72 mit langer Signatur, ⌘/Strg+⇧P Vorschau hin und **zurück**, ⌘/Strg+S aus „An“ | ok (vorher FAIL) |
+| J7 | Liste per Tastatur: j/k, s, ⌫ → Rückfrage, Abbrechen löscht nicht | ok |
+| J8 | Server-Suche: / fokussiert, Enter, Esc beendet | ok |
+| J9 | Seitengröße „25“ tippen, zu klein → 10 beim Speichern; Rechtsklick auf Rollen-Ordner löscht nicht, eigener Ordner nach Rückfrage | ok |
+| J10 | **Neustart mitten im Schreiben**: sauberer Start, kein Editor-Rest, Modus bleibt | ok — ungespeicherter Text ist verloren (kein Autosave; das Handbuch verspricht keins) |
+
+### 9.5 Selbst ausgeführt (nach den Fixes)
+
+| Prüfung | Ergebnis |
+|---|---|
+| `cargo test --workspace` | mailbox 24 + 6 ignoriert, core 18 — grün |
+| `cargo test -p mailbox -- --ignored e2e` gegen GreenMail 2.1.0 (Docker, 33025/33143/33993) | 5/5 inkl. neu `e2e_round3_expunge_and_probe` |
+| `cargo test -p mailbox -- --ignored net_tls` | grün |
+| `cargo clippy --workspace --all-targets` | 0 Warnungen |
+| Windows-Typecheck (`x86_64-pc-windows-msvc`, `--workspace --tests`, ohne Linken) | grün |
+| `cargo audit` / `pnpm audit` | unverändert: nur S12 (zip) + „unmaintained“ / 0 |
+| `pnpm build`, `pnpm test` | grün; 36 Prüfungen |
+| `scripts/ui-smoke/ui.mjs` | 38/38, 0 Konsolenfehler |
+| `scripts/ui-smoke/sweep.mjs` | 143/143 |
+| `scripts/ui-smoke/journeys.mjs` | 68/68 (DE/⌘ + EN/Strg), 0 Konsolenfehler |
+
+Keine neuen Abhängigkeiten. Version bleibt 1.0.0.
+
+### 9.6 Nur auf echter Hardware prüfbar (zusätzlich zu § 7.4)
+
+- [ ] macOS und Windows: Liste offen, WLAN wechseln (anderes Netz), binnen 1–3 min „Abrufen“ → Liste nach ≤ ~10 s statt 100 s
+- [ ] Windows: Strg+Enter / Strg+S aus „An“ und „Betreff“, Strg+Shift+P hin und zurück (der Editor ruft `preventDefault`, damit WebView2 keine eigenen Browser-Kürzel ausführt — headless Chromium ist kein WebView2, also dort prüfen)
+- [ ] macOS: ⌘S im Editor löst keinen „Seite sichern“-Dialog des WebViews aus
+- [ ] Server ohne UIDPLUS (falls verfügbar, z. B. ältere Courier-/Firmen-Server): Nachricht im Papierkorb endgültig löschen, eine zweite dort per Webmail als gelöscht markiert → nur die gewählte verschwindet
+- [ ] Platte voll / schreibgeschützter USB-Stick als Speicherziel für einen Anhang → verständliche Meldung, keine `.part`-Reste

@@ -373,7 +373,7 @@ pub async fn list_folders(
     with_status: bool,
 ) -> Result<Vec<Folder>, String> {
     let st = st.inner().clone();
-    blocking(move || st.pool.with(&st, &account_id, |s| fetch_folders(s, with_status))).await
+    blocking(move || st.pool.read(&st, &account_id, |s| fetch_folders(s, with_status))).await
 }
 
 #[tauri::command]
@@ -493,7 +493,7 @@ pub(crate) fn do_list(
             }
         }
         let limit = limit.clamp(1, 500);
-        let page = st.pool.with(st, account_id, |s| {
+        let page = st.pool.read(st, account_id, |s| {
             let mb = s.select(folder)?;
             let total = mb.exists;
             if total == 0 || offset >= total {
@@ -583,7 +583,7 @@ pub(crate) fn do_search(
     }
     // Suchbegriffe sind kurz; überlange Eingaben kappen (auch für LITERAL-).
     let q: String = q.chars().take(1000).collect();
-    st.pool.with(st, account_id, |s| {
+    st.pool.read(st, account_id, |s| {
         let literal_plus = s
             .capabilities()
             .map(|c| c.has_str("LITERAL+") || c.has_str("LITERAL-"))
@@ -616,7 +616,7 @@ fn fetch_raw(s: &mut ImapSession, folder: &str, uid: u32) -> imap::Result<Option
 
 fn fetch_raw_or_err(st: &AppState, account_id: &str, folder: &str, uid: u32) -> Result<RawMessage, String> {
     st.pool
-        .with(st, account_id, |s| fetch_raw(s, folder, uid))?
+        .read(st, account_id, |s| fetch_raw(s, folder, uid))?
         .ok_or_else(|| {
             tr(
                 "Nachricht nicht gefunden — vielleicht wurde sie inzwischen verschoben.",
@@ -703,7 +703,7 @@ pub async fn set_flag(
             other => return Err(format!("{}: {other}", tr("Unbekanntes Flag", "Unknown flag"))),
         };
         let op = if value { "+FLAGS.SILENT" } else { "-FLAGS.SILENT" };
-        st.pool.with(&st, &account_id, |s| {
+        st.pool.read(&st, &account_id, |s| {
             s.select(&folder)?;
             s.uid_store(uid_set(&uids), format!("{op} ({imap_flag})"))?;
             Ok(())
@@ -722,11 +722,7 @@ fn do_move(s: &mut ImapSession, uids: &[u32], target: &str) -> imap::Result<()> 
         Err(e) => return Err(e),
     }
     s.uid_copy(&set, quote(target))?;
-    s.uid_store(&set, "+FLAGS.SILENT (\\Deleted)")?;
-    if s.uid_expunge(&set).is_err() {
-        s.expunge()?;
-    }
-    Ok(())
+    expunge_uids(s, uids)
 }
 
 #[tauri::command]
@@ -785,15 +781,39 @@ pub(crate) fn do_delete(st: &AppState, account_id: &str, folder: &str, uids: &[u
     }
 }
 
-/// \Deleted setzen und genau diese UIDs entfernen (UIDPLUS); ohne UIDPLUS
-/// bleibt nur EXPUNGE auf den ganzen Ordner.
-fn expunge_uids(s: &mut ImapSession, uids: &[u32]) -> imap::Result<()> {
+/// \Deleted setzen und genau diese UIDs entfernen. Mit UIDPLUS per
+/// `UID EXPUNGE`; ohne UIDPLUS nach RFC 4315 § 2.1: andere Nachrichten, die
+/// schon \Deleted tragen, vorübergehend davon befreien, `EXPUNGE`, dann ihr
+/// \Deleted zurücksetzen — so verschwinden nur die gemeinten Nachrichten.
+/// (Vorher fiel jeder `UID EXPUNGE`-Fehler, auch ein Verbindungsabbruch, auf
+/// `EXPUNGE` des ganzen Ordners zurück.)
+pub(crate) fn expunge_uids(s: &mut ImapSession, uids: &[u32]) -> imap::Result<()> {
     let set = uid_set(uids);
+    let uidplus = s.capabilities().map(|c| c.has_str("UIDPLUS")).unwrap_or(false);
     s.uid_store(&set, "+FLAGS.SILENT (\\Deleted)")?;
-    if s.uid_expunge(&set).is_err() {
-        s.expunge()?;
+    if uidplus {
+        s.uid_expunge(&set)?;
+        return Ok(());
     }
-    Ok(())
+    let others = foreign_deleted(s.uid_search("DELETED")?, uids);
+    if others.is_empty() {
+        s.expunge()?;
+        return Ok(());
+    }
+    let others = uid_set(&others);
+    s.uid_store(&others, "-FLAGS.SILENT (\\Deleted)")?;
+    let res = s.expunge().map(|_| ());
+    // Auch nach einem fehlgeschlagenen EXPUNGE zurücksetzen (Verbindung weg →
+    // bleiben die anderen ohne \Deleted: nichts geht verloren).
+    let restore = s.uid_store(&others, "+FLAGS.SILENT (\\Deleted)").map(|_| ());
+    res.and(restore)
+}
+
+/// UIDs mit \Deleted, die nicht zu den gemeinten gehören (aufsteigend).
+fn foreign_deleted(found: impl IntoIterator<Item = u32>, mine: &[u32]) -> Vec<u32> {
+    let mut v: Vec<u32> = found.into_iter().filter(|u| !mine.contains(u)).collect();
+    v.sort_unstable();
+    v
 }
 
 #[tauri::command]
@@ -1052,6 +1072,70 @@ mod e2e;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Skript-Server: beantwortet jeden Befehl getaggt mit OK, `caps` als
+    /// CAPABILITY, `deleted` als Antwort auf UID SEARCH DELETED; zeichnet die
+    /// Befehle (ohne Tag) auf.
+    fn scripted_session(caps: &'static str, deleted: &'static str) -> (ImapSession, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let log2 = log.clone();
+        std::thread::spawn(move || {
+            let (s, _) = l.accept().unwrap();
+            let mut w = s.try_clone().unwrap();
+            w.write_all(b"* OK fake\r\n").unwrap();
+            for line in BufReader::new(s).lines() {
+                let Ok(line) = line else { break };
+                let (tag, cmd) = line.split_once(' ').unwrap_or((&line, ""));
+                let up = cmd.to_ascii_uppercase();
+                if up.starts_with("CAPABILITY") {
+                    w.write_all(format!("* CAPABILITY {caps}\r\n").as_bytes()).unwrap();
+                } else if up.starts_with("UID SEARCH DELETED") {
+                    w.write_all(format!("* SEARCH {deleted}\r\n").as_bytes()).unwrap();
+                } else if up.starts_with("UID EXPUNGE") && !caps.contains("UIDPLUS") {
+                    w.write_all(format!("{tag} BAD unknown\r\n").as_bytes()).unwrap();
+                    continue;
+                }
+                if !up.starts_with("LOGIN") {
+                    log2.lock().unwrap().push(cmd.to_string());
+                }
+                w.write_all(format!("{tag} OK done\r\n").as_bytes()).unwrap();
+            }
+        });
+        let client = crate::imap::open("127.0.0.1", port, mailbox_core::Security::None).unwrap();
+        (client.login("u", "p").map_err(|(e, _)| e).unwrap(), log)
+    }
+
+    #[test]
+    fn expunge_without_uidplus_spares_other_deleted_messages() {
+        // Ohne UIDPLUS, im Ordner tragen 5 und 9 schon \Deleted (anderes Programm).
+        let (mut s, log) = scripted_session("IMAP4rev1", "5 7 9");
+        expunge_uids(&mut s, &[7]).unwrap();
+        let log = log.lock().unwrap().clone();
+        assert_eq!(
+            log,
+            vec![
+                "CAPABILITY",
+                "UID STORE 7 +FLAGS.SILENT (\\Deleted)",
+                "UID SEARCH DELETED",
+                "UID STORE 5,9 -FLAGS.SILENT (\\Deleted)",
+                "EXPUNGE",
+                "UID STORE 5,9 +FLAGS.SILENT (\\Deleted)",
+            ],
+            "{log:?}"
+        );
+        // Mit UIDPLUS: genau UID EXPUNGE, kein EXPUNGE des Ordners.
+        let (mut s, log) = scripted_session("IMAP4rev1 UIDPLUS", "");
+        expunge_uids(&mut s, &[7, 8]).unwrap();
+        let log = log.lock().unwrap().clone();
+        assert_eq!(log, vec!["CAPABILITY", "UID STORE 7,8 +FLAGS.SILENT (\\Deleted)", "UID EXPUNGE 7,8"], "{log:?}");
+        // Ohne UIDPLUS und ohne fremde \Deleted: einfaches EXPUNGE.
+        let (mut s, log) = scripted_session("IMAP4rev1", "7");
+        expunge_uids(&mut s, &[7]).unwrap();
+        assert_eq!(log.lock().unwrap().last().map(String::as_str), Some("EXPUNGE"));
+    }
 
     #[test]
     fn attachment_written_atomically_with_umlaut_path() {

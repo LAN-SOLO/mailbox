@@ -163,7 +163,10 @@ export function SettingsModal({
                   min={10}
                   max={500}
                   value={s.pageSize}
-                  onChange={(e) => set('pageSize', Math.max(10, Math.min(500, Number(e.target.value) || 50)))}
+                  // Erst beim Verlassen auf 10–500 begrenzen: sonst wurde aus
+                  // getipptem „25“ über die Zwischenstufe „2“ → 10 eine „105“.
+                  onChange={(e) => set('pageSize', Math.min(500, Math.floor(Number(e.target.value) || 0)))}
+                  onBlur={() => set('pageSize', Math.max(10, Math.min(500, s.pageSize || 50)))}
                 />
               </label>
               <label className="field grow1">
@@ -173,7 +176,7 @@ export function SettingsModal({
                   min={0}
                   max={120}
                   value={s.checkIntervalMin}
-                  onChange={(e) => set('checkIntervalMin', Math.max(0, Number(e.target.value) || 0))}
+                  onChange={(e) => set('checkIntervalMin', Math.max(0, Math.min(120, Math.floor(Number(e.target.value) || 0))))}
                 />
               </label>
             </div>
@@ -309,7 +312,7 @@ export function SettingsModal({
           <button className="ghost" onClick={onClose}>
             {t.cancel}
           </button>
-          <button className="primary" onClick={() => onSave(s)}>
+          <button className="primary" onClick={() => onSave({ ...s, pageSize: Math.max(10, Math.min(500, s.pageSize || 50)) })}>
             {t.saveSettings}
           </button>
         </div>

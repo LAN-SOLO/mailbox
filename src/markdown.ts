@@ -149,12 +149,20 @@ export function hasMarkup(md: string): boolean {
 
 // --- Text-Werkzeuge für den Editor ----------------------------------------
 
-/** Harter Umbruch bei `width` Zeichen; Zitatzeilen und Signatur bleiben. */
+/** Harter Umbruch bei `width` Zeichen. Unangetastet bleiben Zitatzeilen,
+ *  Code-Blöcke (```) und die Signatur — alles ab der Trennzeile „-- “. */
 export function wrapText(text: string, width = 72): string {
+  let inCode = false;
+  let inSig = false;
   return text
     .split('\n')
     .map((line) => {
-      if (line.length <= width || /^\s*>/.test(line) || line === '-- ') return line;
+      if (line === '-- ') inSig = true;
+      if (/^\s*```/.test(line)) {
+        inCode = !inCode;
+        return line;
+      }
+      if (inSig || inCode || line.length <= width || /^\s*>/.test(line)) return line;
       const words = line.split(' ');
       const out: string[] = [];
       let cur = '';
