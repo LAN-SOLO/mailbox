@@ -1,6 +1,6 @@
 [package]
 name = "mailbox"
-version = "0.1.0"
+version = "1.0.0"
 description = "mailbox — Mail-Client mit zwei Modi (IMAP/SMTP)"
 edition = "2021"
 license = "MIT"
