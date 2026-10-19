@@ -12,10 +12,12 @@ import {
   fmtSize,
 } from '../api';
 import { Dict, Lang } from '../i18n';
+import { useEscape } from '../useEscape';
 import {
   IconArchive,
   IconCode,
   IconDownload,
+  IconEdit,
   IconEye,
   IconEyeOff,
   IconForward,
@@ -28,17 +30,23 @@ import {
   IconTrash,
 } from '../icons';
 
-/** HTML-Mail in ein eigenständiges Dokument mit strenger CSP verpacken. */
-function wrapHtml(html: string, remote: boolean): string {
-  const img = remote ? "img-src data: https: http: cid:" : 'img-src data: cid:';
-  const csp = `default-src 'none'; ${img}; style-src 'unsafe-inline'; font-src data:`;
+/** HTML-Mail in ein eigenständiges Dokument mit strenger CSP verpacken.
+ *
+ *  Die CSP-Meta steht als allererstes Element im Dokument: Der HTML-Parser
+ *  legt sie in den <head>, bevor irgendetwas aus der Mail geparst wird.
+ *  (Bis 0.1 wurde sie hinter das erste <head> der Mail gesetzt — ein
+ *  <img> *vor* dem <head> lud dann trotz Sperre.) Die Mail selbst bleibt
+ *  unverändert dahinter; ihre <html>/<head>-Tags verschmelzen mit unseren
+ *  (ein eigenes <!doctype> der Mail ist dahinter wirkungslos — wir setzen
+ *  immer den Standardmodus).
+ *  Ohne `allow-scripts` laufen ohnehin keine Skripte, Formulare und
+ *  Navigation sind über die Sandbox bzw. die App-CSP (frame-src) gesperrt. */
+export function wrapHtml(html: string, remote: boolean): string {
+  const img = remote ? 'img-src data: https: http:' : 'img-src data:';
+  const csp = `default-src 'none'; ${img}; style-src 'unsafe-inline'; font-src data:; form-action 'none'`;
   const reset =
     '<style>html,body{margin:0;padding:12px;background:#fff;color:#111;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:14px;line-height:1.5;word-break:break-word}img{max-width:100%;height:auto}a{color:#0369a1}pre{white-space:pre-wrap}</style>';
-  const head = `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}">${reset}`;
-  // vorhandenes <head> ergänzen, sonst eines voranstellen
-  if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, (m) => `${m}${head}`);
-  if (/<html[^>]*>/i.test(html)) return html.replace(/<html[^>]*>/i, (m) => `${m}<head>${head}</head>`);
-  return `<!doctype html><html><head>${head}</head><body>${html}</body></html>`;
+  return `<!doctype html><meta http-equiv="Content-Security-Policy" content="${csp}"><meta charset="utf-8"><meta name="referrer" content="no-referrer">${reset}${html}`;
 }
 
 function AddrList({ list, label }: { list: Address[]; label: string }) {
@@ -74,6 +82,9 @@ export function MessageView({
   remoteDefault,
   canArchive,
   canSpam,
+  isDraft,
+  onEditDraft,
+  onMailto,
   folders,
   onReply,
   onReplyAll,
@@ -95,6 +106,9 @@ export function MessageView({
   remoteDefault: boolean;
   canArchive: boolean;
   canSpam: boolean;
+  isDraft: boolean;
+  onEditDraft: () => void;
+  onMailto: (href: string) => void;
   folders: Folder[];
   onReply: () => void;
   onReplyAll: () => void;
@@ -114,6 +128,10 @@ export function MessageView({
   const [moveOpen, setMoveOpen] = useState(false);
   const frameRef = useRef<HTMLIFrameElement>(null);
 
+  useEscape(() => setSource(null), source !== null);
+  useEscape(() => setShowHeaders(false), showHeaders);
+  useEscape(() => setMoveOpen(false), moveOpen);
+
   // je Nachricht zurücksetzen
   useEffect(() => {
     setRemote(remoteDefault);
@@ -128,16 +146,19 @@ export function MessageView({
     [detail?.html, remote]
   );
 
-  // Links aus der Sandbox heraus im System-Browser öffnen
+  // Links aus der Sandbox heraus: http(s) im System-Browser, mailto: als
+  // neue Nachricht in mailbox. Ein Klick-Handler am Dokument erwischt auch
+  // Links in <area> und verschachtelten Elementen.
   const hookLinks = () => {
     const d = frameRef.current?.contentDocument;
     if (!d) return;
-    d.querySelectorAll('a[href]').forEach((a) => {
-      a.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        const href = (a as HTMLAnchorElement).getAttribute('href') ?? '';
-        if (/^(https?:|mailto:)/i.test(href)) openUrl(href).catch(() => {});
-      });
+    d.addEventListener('click', (ev) => {
+      const el = (ev.target as Element | null)?.closest?.('a[href], area[href]');
+      if (!el) return;
+      ev.preventDefault();
+      const href = (el.getAttribute('href') ?? '').trim();
+      if (/^mailto:/i.test(href)) onMailto(href);
+      else if (/^https?:/i.test(href)) openUrl(href).catch(() => {});
     });
   };
 
@@ -187,6 +208,11 @@ export function MessageView({
         <button onClick={onForward} title="f">
           <IconForward size={12} /> {t.forward}
         </button>
+        {isDraft && (
+          <button className="primary" onClick={onEditDraft} disabled={!detail}>
+            <IconEdit size={12} /> {t.editDraft}
+          </button>
+        )}
         <span className="spacer" />
         {canArchive && (
           <button onClick={onArchive} title="e">

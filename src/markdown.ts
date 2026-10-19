@@ -32,11 +32,25 @@ function inline(raw: string): string {
     .split(/(<a [^>]*>.*?<\/a>)/)
     .map((part, i) => (i % 2 === 1 ? part : part.replace(URL_RE, '<a href="$1">$1</a>')))
     .join('');
+  // Anker herauslösen: Hervorhebungen dürfen nie in einer URL landen
+  // („https://x.de/_a_“ wurde sonst zu href="…<i>a</i>"). Der Linktext von
+  // [Text](url) bekommt sie, eine nackte URL bleibt, wie sie ist.
+  const anchors: string[] = [];
+  s = s.replace(/<a href="([^"]*)">(.*?)<\/a>/g, (_, u: string, text: string) => {
+    anchors.push(`<a href="${u}">${text === u ? text : emphasis(text)}</a>`);
+    return `\u0001${anchors.length - 1}\u0001`;
+  });
+  s = emphasis(s);
+  s = s.replace(/\u0001(\d+)\u0001/g, (_, i: string) => anchors[Number(i)]);
+  s = s.replace(/\u0000(\d+)\u0000/g, (_, i: string) => codes[Number(i)]);
+  return s;
+}
+
+function emphasis(s: string): string {
   s = s.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
   s = s.replace(/~~([^~\n]+)~~/g, '<s>$1</s>');
   s = s.replace(/(^|[^\w*])\*(\S(?:[^*\n]*\S)?)\*(?!\w)/g, '$1<i>$2</i>');
   s = s.replace(/(^|[^\w_])_(\S(?:[^_\n]*\S)?)_(?!\w)/g, '$1<i>$2</i>');
-  s = s.replace(/\u0000(\d+)\u0000/g, (_, i: string) => codes[Number(i)]);
   return s;
 }
 

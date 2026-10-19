@@ -58,6 +58,9 @@ pub struct Draft {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageRef {
+    /// Konto der Nachricht — leer = Absenderkonto des Entwurfs.
+    #[serde(default)]
+    pub account_id: Option<String>,
     pub folder: String,
     pub uid: u32,
 }
@@ -65,6 +68,11 @@ pub struct MessageRef {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerAttachments {
+    /// Konto der Quellnachricht — leer = Absenderkonto des Entwurfs
+    /// (Weiterleiten über ein anderes Konto holt die Anhänge trotzdem vom
+    /// richtigen Server).
+    #[serde(default)]
+    pub account_id: Option<String>,
     pub folder: String,
     pub uid: u32,
     pub indices: Vec<usize>,

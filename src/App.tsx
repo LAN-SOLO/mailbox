@@ -11,6 +11,8 @@ import {
   fmtAddress,
   fmtDateLong,
 } from './api';
+import { ask } from './dialog';
+import { useEscape } from './useEscape';
 import { dicts, Lang } from './i18n';
 import { AccountModal } from './components/AccountModal';
 import { Compose, ComposeInit } from './components/Compose';
@@ -38,6 +40,7 @@ function PromptModal({
   cancelLabel: string;
 }) {
   const [v, setV] = useState('');
+  useEscape(onClose);
   return (
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -51,7 +54,6 @@ function PromptModal({
           onChange={(e) => setV(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && v.trim()) onOk(v.trim());
-            if (e.key === 'Escape') onClose();
           }}
         />
         <div className="btnrow">
@@ -161,6 +163,7 @@ export default function App() {
       const req = ++listReq.current;
       setLoading(true);
       try {
+        let page: Awaited<ReturnType<typeof api.listMessages>> | null = null;
         if (!append) {
           const cached = await api.listMessages(target.accountId, target.folder, 0, pageSize, false);
           if (req !== listReq.current) return;
@@ -168,12 +171,22 @@ export default function App() {
             setMessages(cached.messages);
             setTotal(cached.total);
             setFromCache(true);
+          } else {
+            // Kein Cache → das war schon die frische Server-Antwort.
+            page = cached;
           }
         }
-        const page = await api.listMessages(target.accountId, target.folder, offset, pageSize, true);
+        if (!page) page = await api.listMessages(target.accountId, target.folder, offset, pageSize, true);
         if (req !== listReq.current) return;
-        setMessages((m) => (append ? [...m, ...page.messages] : page.messages));
-        setTotal(page.total);
+        const fresh = page;
+        setMessages((m) => {
+          if (!append) return fresh.messages;
+          // Neue Mails zwischen zwei Seiten verschieben die Sequenznummern —
+          // Dubletten aussortieren.
+          const have = new Set(m.map(msgKey));
+          return [...m, ...fresh.messages.filter((x) => !have.has(msgKey(x)))];
+        });
+        setTotal(fresh.total);
         setFromCache(false);
       } catch (e) {
         if (req === listReq.current) fail(e);
@@ -201,7 +214,12 @@ export default function App() {
         })
       );
       if (req !== listReq.current) return;
-      const merged = parts.flat().sort((x, y) => (y.date ?? '').localeCompare(x.date ?? ''));
+      // Datumswerte tragen verschiedene Zeitzonen (+02:00, Z …) — numerisch vergleichen.
+      const ts = (m: MessageSummary) => {
+        const v = m.date ? Date.parse(m.date) : NaN;
+        return Number.isNaN(v) ? 0 : v;
+      };
+      const merged = parts.flat().sort((x, y) => ts(y) - ts(x));
       setMessages(merged);
       setTotal(merged.length);
       setFromCache(false);
@@ -339,10 +357,13 @@ export default function App() {
 
   const deleteMsgs = async (list = targets()) => {
     if (list.length === 0) return;
-    const finalDelete = list.every((m) => folderRole(m.accountId, m.folder) === 'trash');
+    // Endgültig: im Papierkorb — oder in einem Konto ganz ohne Papierkorb.
+    const finalDelete = list.some(
+      (m) => folderRole(m.accountId, m.folder) === 'trash' || !roleFolder(m.accountId, 'trash')
+    );
     if (settings?.confirmDelete || finalDelete) {
       const q = finalDelete ? t.confirmDeleteFinal(list.length) : t.confirmDelete(list.length);
-      if (!window.confirm(q)) return;
+      if (!(await ask(q, { ok: t.delete, cancel: t.cancel }))) return;
     }
     try {
       for (const g of groupBy(list)) await api.deleteMessages(g.accountId, g.folder, g.uids);
@@ -433,20 +454,58 @@ export default function App() {
     return a?.signature ? `\n\n-- \n${a.signature}` : '';
   };
 
-  const newMessage = () => {
+  const newMessage = (prefill?: { to?: string; cc?: string; subject?: string; body?: string }) => {
     const accountId = sel?.accountId ?? active?.accountId ?? accounts[0]?.id;
     if (!accountId) return;
     setCompose({
       kind: 'new',
       accountId,
-      to: '',
-      cc: '',
+      to: prefill?.to ?? '',
+      cc: prefill?.cc ?? '',
       bcc: '',
-      subject: '',
-      body: signatureBlock(accountId),
+      subject: prefill?.subject ?? '',
+      body: `${prefill?.body ?? ''}${signatureBlock(accountId)}`,
       quote: '',
       inReplyTo: null,
       references: [],
+    });
+  };
+
+  /** mailto:-Link aus einer Mail → neue Nachricht in mailbox. */
+  const openMailto = (href: string) => {
+    try {
+      const u = new URL(href);
+      const q = u.searchParams;
+      newMessage({
+        to: [decodeURIComponent(u.pathname), q.get('to') ?? ''].filter(Boolean).join(', '),
+        cc: q.get('cc') ?? '',
+        subject: q.get('subject') ?? '',
+        body: q.get('body') ?? '',
+      });
+    } catch {
+      newMessage();
+    }
+  };
+
+  /** Entwurf aus dem Entwürfe-Ordner im Editor fortsetzen. */
+  const editDraft = () => {
+    if (!detail) return;
+    const d = detail;
+    const ref = { accountId: d.accountId, folder: d.folder, uid: d.uid };
+    const items = d.attachments.filter((a) => !a.inline || !a.contentId);
+    setCompose({
+      kind: 'draft',
+      accountId: d.accountId,
+      to: d.to.map(fmtAddress).join(', '),
+      cc: d.cc.map(fmtAddress).join(', '),
+      bcc: d.bcc.map(fmtAddress).join(', '),
+      subject: d.subject,
+      body: d.text ?? '',
+      quote: '',
+      inReplyTo: d.inReplyTo,
+      references: d.references,
+      serverAttachments: items.length ? { ...ref, items } : null,
+      replacesDraft: ref,
     });
   };
 
@@ -481,6 +540,7 @@ export default function App() {
       quote: quoted(d).trim(),
       inReplyTo: d.messageId,
       references: refs,
+      source: { accountId: d.accountId, folder: d.folder, uid: d.uid },
     });
   };
 
@@ -506,13 +566,19 @@ export default function App() {
       quote: '',
       inReplyTo: null,
       references: [],
+      // Originalanhänge gehen mit (im Editor einzeln entfernbar); eingebettete
+      // Bilder hängen am HTML-Teil und fallen beim Klartext-Weiterleiten weg.
+      serverAttachments: (() => {
+        const items = d.attachments.filter((a) => !a.inline || !a.contentId);
+        return items.length ? { accountId: d.accountId, folder: d.folder, uid: d.uid, items } : null;
+      })(),
     });
   };
 
   // --- Konten & Ordner ----------------------------------------------------
 
   const deleteAccount = async (a: Account) => {
-    if (!window.confirm(t.confirmDeleteAccount(a.email))) return;
+    if (!(await ask(t.confirmDeleteAccount(a.email), { ok: t.deleteAccount, cancel: t.cancel }))) return;
     try {
       await api.deleteAccount(a.id);
       if (sel?.accountId === a.id) {
@@ -541,7 +607,7 @@ export default function App() {
   };
 
   const deleteFolder = async (accountId: string, f: Folder) => {
-    if (!window.confirm(t.confirmDeleteFolder(f.display))) return;
+    if (!(await ask(t.confirmDeleteFolder(f.display), { ok: t.deleteFolder, cancel: t.cancel }))) return;
     try {
       await api.deleteFolder(accountId, f.name);
       if (sel?.accountId === accountId && sel.folder === f.name) {
@@ -555,7 +621,7 @@ export default function App() {
   };
 
   const emptyTrash = async (accountId: string, f: Folder) => {
-    if (!window.confirm(t.confirmEmptyTrash)) return;
+    if (!(await ask(t.confirmEmptyTrash, { ok: t.emptyTrash, cancel: t.cancel }))) return;
     try {
       await api.emptyFolder(accountId, f.name);
       if (sel?.accountId === accountId && sel.folder === f.name) {
@@ -566,6 +632,17 @@ export default function App() {
     } catch (e) {
       fail(e);
     }
+  };
+
+  /** Ersetzter Entwurf: aus der Liste nehmen und Entwürfe neu laden. */
+  const afterDraftReplaced = (r: { accountId: string; folder: string; uid: number }) => {
+    const key = `${r.accountId}|${r.folder}|${r.uid}`;
+    setMessages((m) => m.filter((x) => msgKey(x) !== key));
+    if (active && msgKey(active) === key) {
+      setActive(null);
+      setDetail(null);
+    }
+    if (sel && sel.accountId === r.accountId && sel.folder === r.folder) loadList(sel, 0, false);
   };
 
   const saveSettings = (s: Settings) => {
@@ -594,19 +671,15 @@ export default function App() {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
-      if (e.key === 'Escape') {
-        setCompose(null);
-        setAccountEdit(null);
-        setShowSettings(false);
-        setFolderPrompt(null);
-        return;
-      }
+      // Esc schließen die Dialoge selbst (Editor mit Rückfrage, Einstellungen
+      // mit Rücknahme der Live-Vorschau) — hier nichts mehr wegwerfen.
       if (typing || compose || accountEdit || showSettings || folderPrompt) return;
+      if (document.querySelector('.hlp-overlay')) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const idx = active ? messages.findIndex((m) => msgKey(m) === msgKey(active)) : -1;
       // Buchstaben-Kürzel dürfen nicht im gleich darauf fokussierten
       // Editor landen („r“ öffnet die Antwort und tippte bisher ein r).
-      if ('jkrafesun#/'.includes(e.key)) e.preventDefault();
+      if ('jkrafesun#/'.includes(e.key) && e.key.length === 1) e.preventDefault();
       switch (e.key) {
         case 'j':
           if (messages[idx + 1]) openMessage(messages[idx + 1]);
@@ -684,7 +757,7 @@ export default function App() {
         <span className="spacer" />
         {accounts.length > 0 && (
           <>
-            <button className="primary" onClick={newMessage} title="n">
+            <button className="primary" onClick={() => newMessage()} title="n">
               <IconPlus size={12} /> {t.newMessage}
             </button>
             <button onClick={refresh} disabled={loading} title={t.refresh}>
@@ -772,6 +845,9 @@ export default function App() {
             remoteDefault={expert && settings.loadRemoteImages}
             canArchive={canArchive}
             canSpam={canSpam}
+            isDraft={!!active && (active.draft || folderRole(active.accountId, active.folder) === 'drafts')}
+            onEditDraft={editDraft}
+            onMailto={openMailto}
             folders={activeAccountId ? folders[activeAccountId] ?? [] : []}
             onReply={() => reply(false)}
             onReplyAll={() => reply(true)}
@@ -787,19 +863,6 @@ export default function App() {
         </div>
       )}
 
-      {accountEdit && (
-        <AccountModal
-          account={accountEdit.kind === 'edit' ? accountEdit.account : null}
-          expert={expert}
-          t={t}
-          onClose={() => setAccountEdit(null)}
-          onSaved={async () => {
-            setAccountEdit(null);
-            showToast(t.accountSaved);
-            await loadAccounts();
-          }}
-        />
-      )}
       {showSettings && settingsBackup && (
         <SettingsModal
           settings={settings}
@@ -817,6 +880,19 @@ export default function App() {
           onDeleteAccount={deleteAccount}
         />
       )}
+      {accountEdit && (
+        <AccountModal
+          account={accountEdit.kind === 'edit' ? accountEdit.account : null}
+          expert={expert}
+          t={t}
+          onClose={() => setAccountEdit(null)}
+          onSaved={async () => {
+            setAccountEdit(null);
+            showToast(t.accountSaved);
+            await loadAccounts();
+          }}
+        />
+      )}
       {compose && (
         <Compose
           init={compose}
@@ -829,15 +905,22 @@ export default function App() {
             const was = compose;
             setCompose(null);
             showToast(t.sent);
-            if (was.kind === 'reply' && active) {
-              api.setFlag(active.accountId, active.folder, [active.uid], 'answered', true).catch(() => {});
-              patchMessage(msgKey(active), { answered: true });
+            // \Answered auf genau die Nachricht, auf die geantwortet wurde —
+            // nicht auf die, die inzwischen offen ist.
+            const src = was.source;
+            if (src) {
+              api.setFlag(src.accountId, src.folder, [src.uid], 'answered', true).catch(() => {});
+              patchMessage(`${src.accountId}|${src.folder}|${src.uid}`, { answered: true });
             }
+            if (was.replacesDraft) afterDraftReplaced(was.replacesDraft);
             accounts.forEach((a) => loadFolders(a.id));
           }}
           onDraftSaved={() => {
+            const was = compose;
             setCompose(null);
             showToast(t.draftSaved);
+            if (was.replacesDraft) afterDraftReplaced(was.replacesDraft);
+            else if (sel && folderRole(sel.accountId, sel.folder) === 'drafts') loadList(sel, 0, false);
             accounts.forEach((a) => loadFolders(a.id));
           }}
         />

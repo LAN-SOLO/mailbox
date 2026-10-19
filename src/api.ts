@@ -151,6 +151,12 @@ export interface Draft {
   priority: Priority;
   /** Lesebestätigung anfordern (Disposition-Notification-To). */
   readReceipt: boolean;
+  /** Anhänge einer Nachricht auf dem Server mitschicken (Weiterleiten,
+   *  Entwurf fortsetzen) — Indizes wie `Attachment.index`. */
+  serverAttachments: { accountId: string; folder: string; uid: number; indices: number[] } | null;
+  /** Entwurf, den diese Nachricht ersetzt — wird nach Senden/Speichern
+   *  entfernt (nur, wenn er das \Draft-Flag trägt). */
+  replacesDraft: { accountId: string; folder: string; uid: number } | null;
 }
 
 export interface TestResult {

@@ -250,7 +250,7 @@ fn e2e_commands() {
         to: "anna@lan-solo.test".into(),
         subject: fwd_subject.clone(),
         body: "siehe Anhang".into(),
-        server_attachments: Some(ServerAttachments { folder: "INBOX".into(), uid: m.uid, indices: vec![att.index] }),
+        server_attachments: Some(ServerAttachments { account_id: None, folder: "INBOX".into(), uid: m.uid, indices: vec![att.index] }),
         ..Default::default()
     };
     do_send(&st, &fwd).unwrap();
@@ -260,6 +260,20 @@ fn e2e_commands() {
     let p = parse_message(&raw_fwd).unwrap();
     let a = p.attachments.iter().find(|a| a.filename == "Angebot.pdf").expect("attachment forwarded");
     assert_eq!(mailbox_core::attachment_bytes(&raw_fwd, a.index).unwrap(), b"%PDF-1.4 test");
+
+    // Weiterleiten über ein anderes Konto: Anhang kommt trotzdem vom Quellkonto
+    let x_subject = format!("Fwd über anna {run}");
+    let cross = Draft {
+        account_id: "a".into(),
+        to: "test@lan-solo.test".into(),
+        subject: x_subject.clone(),
+        server_attachments: Some(ServerAttachments { account_id: Some("t".into()), folder: "INBOX".into(), uid: m.uid, indices: vec![att.index] }),
+        ..Default::default()
+    };
+    do_send(&st, &cross).unwrap();
+    let back = list(&st, "t", "INBOX");
+    let got = back.iter().find(|x| x.subject == x_subject).expect("cross forward delivered");
+    assert!(got.has_attachments);
 
     // Tippfehler im Empfänger: Senden verweigert, nichts verschickt
     let bad = Draft { account_id: "t".into(), to: "anna@lan-solo.test, anna".into(), subject: "x".into(), ..Default::default() };
@@ -277,7 +291,7 @@ fn e2e_commands() {
         to: "anna@lan-solo.test".into(),
         subject: dsub.clone(),
         body: "v2".into(),
-        replaces_draft: Some(MessageRef { folder: drafts.clone(), uid: first.uid }),
+        replaces_draft: Some(MessageRef { account_id: None, folder: drafts.clone(), uid: first.uid }),
         ..Default::default()
     };
     do_save_draft(&st, &d2).unwrap();
@@ -285,11 +299,11 @@ fn e2e_commands() {
     assert_eq!(now.len(), 1, "old draft replaced");
     assert_ne!(now[0].uid, first.uid);
     // Senden aus dem Entwurf entfernt ihn
-    let d3 = Draft { replaces_draft: Some(MessageRef { folder: drafts.clone(), uid: now[0].uid }), ..d2.clone() };
+    let d3 = Draft { replaces_draft: Some(MessageRef { account_id: Some("t".into()), folder: drafts.clone(), uid: now[0].uid }), ..d2.clone() };
     do_send(&st, &d3).unwrap();
     assert!(list(&st, "t", &drafts).iter().all(|x| x.subject != dsub), "draft removed after send");
     // Ein Verweis auf eine gewöhnliche Mail löscht nichts
-    remove_draft(&st, "t", &MessageRef { folder: "INBOX".into(), uid: m.uid }).unwrap();
+    remove_draft(&st, "t", &MessageRef { account_id: None, folder: "INBOX".into(), uid: m.uid }).unwrap();
     assert!(list(&st, "t", "INBOX").iter().any(|x| x.uid == m.uid));
 
     // Löschen: erst Papierkorb (wird bei Bedarf über Rolle gefunden), dort endgültig

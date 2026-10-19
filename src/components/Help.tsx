@@ -480,18 +480,40 @@ export function Help({ lang }: { lang: Lang }) {
     setHelpLang(lang === 'de' ? 'de' : 'en');
   }, [lang]);
   const c = helpLang === 'de' ? de : en;
-  const [mode, setMode] = useState<'closed' | 'tutorial' | 'manual'>(() =>
-    localStorage.getItem(SEEN_KEY) ? 'closed' : 'tutorial'
-  );
+  const [mode, setMode] = useState<'closed' | 'tutorial' | 'manual'>(() => {
+    try {
+      return localStorage.getItem(SEEN_KEY) ? 'closed' : 'tutorial';
+    } catch {
+      return 'tutorial';
+    }
+  });
   const [step, setStep] = useState(0);
   const [sel, setSel] = useState(c.sections[0].id);
   const [q, setQ] = useState('');
 
   const close = () => {
-    localStorage.setItem(SEEN_KEY, '1');
+    try {
+      localStorage.setItem(SEEN_KEY, '1');
+    } catch {
+      /* ohne Storage erscheint das Tutorial eben beim nächsten Start wieder */
+    }
     setMode('closed');
     setStep(0);
   };
+
+  // Esc schließt das Handbuch (es liegt über allen anderen Dialogen).
+  useEffect(() => {
+    if (mode === 'closed') return;
+    const h = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        close();
+      }
+    };
+    window.addEventListener('keydown', h, true);
+    return () => window.removeEventListener('keydown', h, true);
+  });
 
   const query = q.trim().toLowerCase();
   const filtered = query

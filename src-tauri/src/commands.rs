@@ -786,6 +786,7 @@ pub(crate) fn load_server_attachments(
     if src.indices.is_empty() {
         return Ok(vec![]);
     }
+    let account_id = src.account_id.as_deref().filter(|a| !a.is_empty()).unwrap_or(account_id);
     let (raw, ..) = fetch_raw_or_err(st, account_id, &src.folder, src.uid)?;
     let parsed = parse_message(&raw).ok_or_else(|| tr("Nachricht konnte nicht gelesen werden", "Message could not be parsed"))?;
     let mut out = Vec::new();
@@ -806,6 +807,7 @@ pub(crate) fn load_server_attachments(
 /// Nur Nachrichten mit \Draft-Flag — ein falscher Verweis löscht so keine
 /// gewöhnliche Mail.
 fn remove_draft(st: &AppState, account_id: &str, r: &MessageRef) -> Result<(), String> {
+    let account_id = r.account_id.as_deref().filter(|a| !a.is_empty()).unwrap_or(account_id);
     st.pool.with(st, account_id, |s| {
         s.select(&r.folder)?;
         let fetches = s.uid_fetch(r.uid.to_string(), "(UID FLAGS)")?;

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Account, AccountInput, Security, api } from '../api';
 import { Dict } from '../i18n';
+import { useEscape } from '../useEscape';
 
 const COLORS = ['#38bdf8', '#34d399', '#a78bfa', '#fbbf24', '#f87171', '#fb923c', '#e879f9'];
 
@@ -63,6 +64,10 @@ export function AccountModal({
   const set = <K extends keyof AccountInput>(k: K, v: AccountInput[K]) =>
     setF((p) => ({ ...p, [k]: v }));
 
+  useEscape(onClose);
+
+  const portOk = (p: number) => Number.isInteger(p) && p >= 1 && p <= 65535;
+
   const guessServers = async () => {
     if (!f.email.includes('@')) return;
     if (!f.username) set('username', f.email);
@@ -90,6 +95,11 @@ export function AccountModal({
   };
 
   const test = async () => {
+    if (!portOk(f.imapPort) || !portOk(f.smtpPort)) {
+      setShowServers(true);
+      setError(t.portInvalid);
+      return;
+    }
     setTesting(true);
     setTestResult([]);
     setError('');
@@ -108,6 +118,11 @@ export function AccountModal({
     if (!f.email.includes('@') || !f.imapHost || !f.smtpHost) {
       setShowServers(true);
       setError(t.accNotGuessed);
+      return;
+    }
+    if (!portOk(f.imapPort) || !portOk(f.smtpPort)) {
+      setShowServers(true);
+      setError(t.portInvalid);
       return;
     }
     setSaving(true);
@@ -197,6 +212,8 @@ export function AccountModal({
                 <span>{t.accPort}</span>
                 <input
                   type="number"
+                  min={1}
+                  max={65535}
                   value={f.imapPort}
                   onChange={(e) => set('imapPort', Number(e.target.value) || 0)}
                 />
@@ -220,6 +237,8 @@ export function AccountModal({
                 <span>{t.accPort}</span>
                 <input
                   type="number"
+                  min={1}
+                  max={65535}
                   value={f.smtpPort}
                   onChange={(e) => set('smtpPort', Number(e.target.value) || 0)}
                 />
@@ -229,6 +248,11 @@ export function AccountModal({
                 {secSelect(f.smtpSecurity, (s) => set('smtpSecurity', s))}
               </label>
             </div>
+            {(f.imapSecurity === 'none' || f.smtpSecurity === 'none') && (
+              <div className="note warn">
+                {t.secNoneWarn}
+              </div>
+            )}
           </>
         )}
 

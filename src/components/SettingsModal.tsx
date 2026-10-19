@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react';
+import { getVersion } from '@tauri-apps/api/app';
 import { Account, Settings, UpdateInfo, api } from '../api';
 import { Dict } from '../i18n';
+import { useEscape } from '../useEscape';
 import { IconEdit, IconPlus, IconTrash } from '../icons';
 
-export const APP_VERSION = '0.1.0';
+/** Fallback, falls die Laufzeit-Version nicht abrufbar ist (Browser-Mock). */
+export const APP_VERSION = '1.0.0';
 
 type SetTab = 'general' | 'reading' | 'compose' | 'accounts' | 'app';
 
@@ -34,17 +37,22 @@ export function SettingsModal({
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const [installing, setInstalling] = useState(false);
   const [dataPath, setDataPath] = useState('');
+  const [version, setVersion] = useState(APP_VERSION);
+
+  useEscape(onClose);
 
   useEffect(() => {
     api.dataPath().then(setDataPath).catch(() => {});
+    getVersion().then(setVersion).catch(() => {});
   }, []);
 
-  const set = <K extends keyof Settings>(key: K, value: Settings[K]) =>
-    setS((prev) => {
-      const next = { ...prev, [key]: value };
-      onLive(next);
-      return next;
-    });
+  // Live-Vorschau: nicht im setState-Updater an App melden (React warnt
+  // sonst „Cannot update a component while rendering a different one“).
+  const set = <K extends keyof Settings>(key: K, value: Settings[K]) => {
+    const next = { ...s, [key]: value };
+    setS(next);
+    onLive(next);
+  };
 
   const checkUpdates = () => {
     setUpdState('checking');
@@ -241,7 +249,7 @@ export function SettingsModal({
             </label>
             <div className="updatebox">
               <span>
-                {t.version} {APP_VERSION}
+                {t.version} {version}
               </span>
               <button onClick={checkUpdates} disabled={updState === 'checking'}>
                 {updState === 'checking' ? t.checking : t.checkUpdates}

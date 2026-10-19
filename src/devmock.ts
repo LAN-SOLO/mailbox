@@ -97,6 +97,15 @@ const m = (uid: number, from: string, email: string, subject: string, minsAgo: n
   hasAttachments: false,
   ...extra,
 });
+const drafts: MessageSummary[] = [
+  m(10, 'Max Muster', 'max@lan-solo.test', 'Entwurf: Angebot nachfassen', 30, {
+    folder: 'Drafts',
+    seen: true,
+    draft: true,
+    hasAttachments: true,
+    to: [{ name: 'Anna Beispiel', email: 'anna@lan-solo.test' }],
+  }),
+];
 const messages: MessageSummary[] = [
   m(3, 'Anna Beispiel', 'anna@lan-solo.test', 'Angebot Q4 — mit Anhang', 12, { hasAttachments: true, size: 184320 }),
   m(2, 'Björn Müller', 'bjoern@lan-solo.test', 'Re: Terminvorschlag', 190, { seen: true, answered: true }),
@@ -104,7 +113,7 @@ const messages: MessageSummary[] = [
 ];
 
 function detail(uid: number): MessageDetail {
-  const s = messages.find((x) => x.uid === uid) || messages[0];
+  const s = [...messages, ...drafts].find((x) => x.uid === uid) || messages[0];
   const html =
     uid === 3
       ? '<html><body style="font-family:sans-serif"><h2 style="color:#0284c7">Angebot Q4</h2><p>Hallo Max,</p><p>anbei das <b>Angebot</b> als PDF. Externe Bilder sind hier blockiert:</p><img src="https://example.com/track.gif" width="200" height="40" alt="[externes Bild]"><p>Viele Grüße<br>Anna</p></body></html>'
@@ -118,13 +127,15 @@ function detail(uid: number): MessageDetail {
     inReplyTo: uid === 2 ? '<msg-9@lan-solo.test>' : null,
     references: uid === 2 ? ['<msg-9@lan-solo.test>'] : [],
     text:
-      uid === 3
+      uid === 10
+        ? 'Hallo Anna,\n\nkurze Nachfrage zum **Angebot**.\n\n-- \nMax Muster\nLAN-SOLO'
+        : uid === 3
         ? 'Hallo Max,\n\nanbei das Angebot als PDF.\n\nViele Grüße\nAnna'
         : uid === 2
           ? 'Passt mir gut.\n\n> Wie wäre Dienstag?'
           : 'Hallo,\n\ndies ist eine Klartext-Testmail mit Umlauten: äöü ß.\n\nViele Grüße\nAnna',
     html,
-    attachments: uid === 3 ? [{ index: 2, filename: 'Angebot.pdf', mime: 'application/pdf', size: 180224, contentId: null, inline: false }] : [],
+    attachments: uid === 10 ? [{ index: 1, filename: 'Notizen.txt', mime: 'text/plain', size: 812, contentId: null, inline: false }] : uid === 3 ? [{ index: 2, filename: 'Angebot.pdf', mime: 'application/pdf', size: 180224, contentId: null, inline: false }] : [],
     headers: [
       ['From', `${s.from[0].name} <${s.from[0].email}>`],
       ['To', 'Max Muster <max@lan-solo.test>'],
@@ -151,11 +162,14 @@ const handlers: Record<string, (a: Args) => unknown> = {
   list_folders: () => folders,
   create_folder: () => undefined,
   delete_folder: () => undefined,
-  list_messages: (a) => ({
-    messages: a.folder === 'INBOX' ? messages.map((x) => ({ ...x, accountId: a.accountId as string })) : [],
-    total: a.folder === 'INBOX' ? messages.length : 0,
-    fromCache: false,
-  }),
+  list_messages: (a) => {
+    const src = a.folder === 'INBOX' ? messages : a.folder === 'Drafts' ? drafts : [];
+    return {
+      messages: src.map((x) => ({ ...x, accountId: a.accountId as string })),
+      total: src.length,
+      fromCache: false,
+    };
+  },
   search_messages: (a) => messages.filter((x) => x.subject.toLowerCase().includes(String(a.query).toLowerCase())),
   get_message: (a) => detail(a.uid as number),
   get_message_source: (a) => `From: anna@lan-solo.test\r\nSubject: ${detail(a.uid as number).subject}\r\n\r\n(mock source)`,
@@ -164,7 +178,9 @@ const handlers: Record<string, (a: Args) => unknown> = {
     for (const x of messages) if (uids.includes(x.uid)) (x as unknown as Record<string, boolean>)[a.flag as string] = a.value as boolean;
   },
   move_messages: () => undefined,
-  delete_messages: () => undefined,
+  delete_messages: (a) => {
+    (window as unknown as Record<string, unknown>).__lastDelete = a;
+  },
   empty_folder: () => undefined,
   save_attachment: () => undefined,
   send_message: (a) => {
@@ -174,6 +190,20 @@ const handlers: Record<string, (a: Args) => unknown> = {
   save_draft: (a) => {
     (window as unknown as Record<string, unknown>).__lastDraft = a.draft;
     console.log('[mock] save_draft', JSON.stringify(a.draft));
+  },
+  // Rückfragen (plugin-dialog confirm/ask laufen über „message“): Browser-Dialog
+  'plugin:dialog|message': (a) => {
+    const b = a.buttons as { OkCancelCustom?: [string, string] } | string | undefined;
+    const [ok, cancel] = typeof b === 'object' && b?.OkCancelCustom ? b.OkCancelCustom : ['Ok', 'Cancel'];
+    const yes = window.confirm(String(a.message));
+    (window as unknown as Record<string, unknown>).__lastConfirm = { message: a.message, yes };
+    return yes ? ok : cancel;
+  },
+  'plugin:app|version': () => '1.0.0',
+  'plugin:dialog|open': () => ['/Users/mock/Documents/Bericht.pdf'],
+  'plugin:dialog|save': (a) => `/Users/mock/Downloads/${(a.options as { defaultPath?: string })?.defaultPath ?? 'x'}`,
+  'plugin:opener|open_url': (a) => {
+    (window as unknown as Record<string, unknown>).__lastOpened = a.url;
   },
   data_path: () => '/Users/mock/Library/Application Support/com.lan-solo.mailbox',
   check_update: () => null,

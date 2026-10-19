@@ -11,7 +11,7 @@ const de = {
   // onboarding
   onboardTitle: 'Willkommen bei mailbox.',
   onboardText:
-    'Verbinde dein erstes Postfach: E-Mail-Adresse und Passwort genügen — die Server werden für gängige Anbieter automatisch erkannt. Passwörter landen im Schlüsselbund deines Systems, nie in der Cloud.',
+    'Verbinden Sie Ihr erstes Postfach: E-Mail-Adresse und Passwort genügen — die Server werden für gängige Anbieter automatisch erkannt. Passwörter landen im Schlüsselbund Ihres Systems, nie in der Cloud.',
   addAccount: 'Konto hinzufügen',
   // sidebar
   unifiedInbox: 'Alle Posteingänge',
@@ -44,7 +44,7 @@ const de = {
   loadMore: 'Mehr laden',
   messages: 'Nachrichten',
   noMessages: 'Keine Nachrichten in diesem Ordner.',
-  noFolder: 'Wähle links einen Ordner.',
+  noFolder: 'Wählen Sie links einen Ordner.',
   loading: 'lade …',
   fromCache: 'aus dem Cache — Abgleich läuft',
   selectAll: 'Alle',
@@ -86,7 +86,7 @@ const de = {
   showHtml: 'HTML',
   remoteBlocked: '// Externe Inhalte sind blockiert — Tracking-Pixel und Bilder werden nicht geladen.',
   loadRemote: 'Externe Bilder laden',
-  remoteLoaded: '// Externe Bilder werden geladen. Links öffnen sich in deinem Browser.',
+  remoteLoaded: '// Externe Bilder werden geladen. Links öffnen sich im Browser.',
   linkHint: '// Links öffnen sich im Browser.',
   noBody: '(kein Inhalt)',
   // compose
@@ -106,6 +106,10 @@ const de = {
   draftSaved: 'Entwurf gespeichert',
   discard: 'Verwerfen',
   confirmDiscard: 'Nachricht verwerfen?',
+  editDraft: 'Weiter bearbeiten',
+  composeDraft: 'Entwurf',
+  fromOriginal: 'aus dem Original',
+  draftAttachmentsKept: '// Anhänge des Entwurfs bleiben erhalten.',
   needTo: 'Mindestens ein Empfänger fehlt.',
   quoteHeader: (date: string, from: string) => `Am ${date} schrieb ${from}:`,
   forwardHeader: '-------- Weitergeleitete Nachricht --------',
@@ -172,6 +176,8 @@ const de = {
   secTls: 'TLS',
   secStarttls: 'STARTTLS',
   secNone: 'keine',
+  secNoneWarn: '// Ohne Verschlüsselung gehen Passwort und Mails im Klartext übers Netz — nur für lokale Testserver.',
+  portInvalid: 'Ports müssen zwischen 1 und 65535 liegen.',
   accSignature: 'Signatur',
   accColor: 'Farbe',
   accTest: 'Verbindung testen',
@@ -225,7 +231,7 @@ const de = {
   updateInstalling: 'Installiere …',
   // shortcuts
   shortcuts: 'Kürzel',
-  shortcutHint: '// j/k weiter/zurück · r antworten · a allen · f weiterleiten · e archivieren · # löschen · s Stern · u ungelesen · / suchen · n neu',
+  shortcutHint: '// j/k weiter/zurück · r antworten · a allen · f weiterleiten · e archivieren · # löschen · s Stern · u ungelesen · / suchen · n neu · Esc Dialog schließen',
   error: 'Fehler',
 };
 
@@ -329,6 +335,10 @@ const en: Dict = {
   draftSaved: 'Draft saved',
   discard: 'Discard',
   confirmDiscard: 'Discard message?',
+  editDraft: 'Continue editing',
+  composeDraft: 'Draft',
+  fromOriginal: 'from the original',
+  draftAttachmentsKept: '// The draft’s attachments are kept.',
   needTo: 'At least one recipient is required.',
   quoteHeader: (date, from) => `On ${date}, ${from} wrote:`,
   forwardHeader: '-------- Forwarded message --------',
@@ -393,6 +403,8 @@ const en: Dict = {
   secTls: 'TLS',
   secStarttls: 'STARTTLS',
   secNone: 'none',
+  secNoneWarn: '// Without encryption, password and mail travel the network in clear text — local test servers only.',
+  portInvalid: 'Ports must be between 1 and 65535.',
   accSignature: 'Signature',
   accColor: 'Colour',
   accTest: 'Test connection',
@@ -444,7 +456,7 @@ const en: Dict = {
   updateLater: 'Later',
   updateInstalling: 'Installing …',
   shortcuts: 'Shortcuts',
-  shortcutHint: '// j/k next/prev · r reply · a reply all · f forward · e archive · # delete · s star · u unread · / search · n new',
+  shortcutHint: '// j/k next/prev · r reply · a reply all · f forward · e archive · # delete · s star · u unread · / search · n new · Esc close dialog',
   error: 'Error',
 };
 

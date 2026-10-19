@@ -1,11 +1,20 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
-import { Account, Draft, Priority, api } from '../api';
+import { Account, Attachment, Draft, Priority, api, fmtSize } from '../api';
+import { ask } from '../dialog';
+import { useEscape } from '../useEscape';
 import { Dict } from '../i18n';
 import { IconPaperclip, IconSend, IconX } from '../icons';
 import { hasMarkup, markdownToMailHtml, stripQuotes, toggleQuote, wrapText } from '../markdown';
 
-export type ComposeKind = 'new' | 'reply' | 'forward';
+export type ComposeKind = 'new' | 'reply' | 'forward' | 'draft';
+
+/** Nachricht auf dem Server (Konto + Ordner + UID). */
+export interface MsgRef {
+  accountId: string;
+  folder: string;
+  uid: number;
+}
 
 /** Vorbelegung — wird von App.tsx aus der Nachricht gebaut. */
 export interface ComposeInit {
@@ -21,6 +30,12 @@ export interface ComposeInit {
   quote: string;
   inReplyTo: string | null;
   references: string[];
+  /** Beantwortete Nachricht — bekommt nach dem Senden \Answered. */
+  source?: MsgRef | null;
+  /** Anhänge einer Server-Nachricht, die mitgehen (Weiterleiten, Entwurf). */
+  serverAttachments?: (MsgRef & { items: Attachment[] }) | null;
+  /** Entwurf, der beim Senden/Speichern ersetzt wird. */
+  replacesDraft?: MsgRef | null;
 }
 
 type Format = 'text' | 'html';
@@ -62,6 +77,7 @@ export function Compose({
   const [format, setFormat] = useState<Format>(expert && composeHtml ? 'html' : 'text');
   const [preview, setPreview] = useState(false);
   const [attachments, setAttachments] = useState<string[]>([]);
+  const [serverItems, setServerItems] = useState<Attachment[]>(init.serverAttachments?.items ?? []);
   const [busy, setBusy] = useState<'idle' | 'send' | 'draft'>('idle');
   const [error, setError] = useState('');
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -95,6 +111,16 @@ export function Compose({
     replyTo: expert ? replyTo : '',
     priority: expert ? priority : 'normal',
     readReceipt: expert && readReceipt,
+    serverAttachments:
+      init.serverAttachments && serverItems.length > 0
+        ? {
+            accountId: init.serverAttachments.accountId,
+            folder: init.serverAttachments.folder,
+            uid: init.serverAttachments.uid,
+            indices: serverItems.map((a) => a.index),
+          }
+        : null,
+    replacesDraft: init.replacesDraft ?? null,
   });
 
   const pick = async () => {
@@ -134,10 +160,23 @@ export function Compose({
     }
   };
 
-  const discard = () => {
-    const dirty = body !== init.body || to !== init.to || subject !== init.subject || attachments.length > 0;
-    if (!dirty || window.confirm(t.confirmDiscard)) onClose();
+  const discard = async () => {
+    if (busy !== 'idle') return;
+    const dirty =
+      body !== init.body ||
+      to !== init.to ||
+      cc !== init.cc ||
+      bcc !== init.bcc ||
+      subject !== init.subject ||
+      attachments.length > 0 ||
+      serverItems.length !== (init.serverAttachments?.items.length ?? 0);
+    if (!dirty || (await ask(t.confirmDiscard, { ok: t.discard, cancel: t.cancel }))) onClose();
   };
+
+  // Esc = Verwerfen (mit Rückfrage, wenn etwas geändert wurde) — in beiden Modi.
+  useEscape(() => {
+    discard();
+  });
 
   // --- Editor-Werkzeuge (Experte) -----------------------------------------
   // Änderungen laufen über execCommand('insertText'), damit der native
@@ -323,7 +362,13 @@ export function Compose({
   );
 
   const title =
-    init.kind === 'reply' ? t.composeReply : init.kind === 'forward' ? t.composeForward : t.compose;
+    init.kind === 'reply'
+      ? t.composeReply
+      : init.kind === 'forward'
+        ? t.composeForward
+        : init.kind === 'draft'
+          ? t.composeDraft
+          : t.compose;
 
   const fileName = (p: string) => p.split(/[\\/]/).pop() ?? p;
   const hasSignature = !!accounts.find((a) => a.id === accountId)?.signature;
@@ -515,8 +560,23 @@ export function Compose({
           </div>
         )}
 
-        {attachments.length > 0 && (
+        {(attachments.length > 0 || serverItems.length > 0) && (
           <div className="attachlist">
+            {serverItems.map((a) => (
+              <div key={`srv-${a.index}`}>
+                <IconPaperclip size={12} />
+                <span className="path" title={`${a.filename} — ${t.fromOriginal}`}>
+                  {a.filename} <span className="dim">· {fmtSize(a.size)} · {t.fromOriginal}</span>
+                </span>
+                <button
+                  className="icon ghost"
+                  title={t.removeAttachment}
+                  onClick={() => setServerItems((list) => list.filter((x) => x.index !== a.index))}
+                >
+                  <IconX size={11} />
+                </button>
+              </div>
+            ))}
             {attachments.map((p) => (
               <div key={p}>
                 <IconPaperclip size={12} />
