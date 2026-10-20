@@ -191,7 +191,7 @@ Jeweils auf **macOS** (arm64 oder Intel) und **Windows 11** abhaken. Testkonto b
 **Runde 2 (Verbindung & Dateien)**
 - [ ] macOS und Windows: Konto bei Gmail/GMX/Outlook (993/TLS) und einem Anbieter mit 143/STARTTLS verbinden — „Verbindung testen“ OK (eigene TLS-Schicht, System-Zertifikatsspeicher)
 - [ ] Firmen-/Proxy-Zertifizierungsstelle (falls vorhanden) im System installiert → Verbindung klappt; selbst signiertes Zertifikat (z. B. GreenMail 3993) → „TLS-Fehler“
-- [ ] Hängender Server: nach Login das Netz kappen (Kabel/WLAN), „Abrufen“ → nach ≤ 100 s „Zeitüberschreitung“, die App bleibt bedienbar; Netz wieder an, „Abrufen“ → Liste kommt
+- [ ] Hängender Server: nach Login das Netz kappen (Kabel/WLAN), „Abrufen“ → nach ≤ 100 s (Pause > 30 s: ≤ ~30 s über die Probe; Pause < 30 s: bis ~120 s, weil lesende Befehle nach dem Timeout einmal neu verbinden, § 9) eine Fehlermeldung, die App bleibt bedienbar; Netz wieder an, „Abrufen“ → Liste kommt
 - [ ] Windows: Anhang als PDF speichern, PDF im Acrobat offen lassen, erneut unter **demselben** Namen speichern → Meldung „… vermutlich in einem anderen Programm geöffnet“; nach Schließen klappt es; keine `.part`-Reste im Ordner
 - [ ] Windows: Speicherort in OneDrive-Ordner mit Umlaut im Pfad → Datei vollständig, keine `.part`-Reste
 - [ ] Konto entfernen, während eine Liste lädt → App friert nicht ein, Konto verschwindet und sein Cache-Ordner bleibt danach weg (Runde 2 – Verifikation, W3)
@@ -480,3 +480,23 @@ DE/EN-Gleichstand nach den Änderungen erneut per Skript: 13/13 Abschnitte, glei
 | `scripts/ui-smoke/journeys.mjs` | 72/72 (DE/⌘ + EN/Strg), 0 Konsolenfehler |
 
 Keine neuen Abhängigkeiten, Version 1.0.0. Nur auf echter Hardware prüfbar bleibt alles aus § 7.4 und § 9.6 — dazu: „Umbruch 72“ in einer echten Antwort mit Kontosignatur (WKWebView/WebView2 `execCommand('insertText')`).
+
+## Runde 4 – Regressionen (platform)
+
+Prüfung von `ae38b50..0434bef` mit Blick auf Nebenläufigkeit, Plattform und Lebenszyklus (Sperren, Wiederholung, Probe, Tastatur-Listener, Windows-Zweige, DE/EN). Kein Code geändert — kein Fehler gefunden, der einen Fix mit fehlschlagendem Test rechtfertigt.
+
+| Bereich | Ergebnis |
+|---|---|
+| `SessionPool::run`: Slot-Mutex über Probe + Befehl + Neuverbindung | gehalten nur im `spawn_blocking`-Thread (alle Pool-Nutzer sind `async` + `blocking`), nie auf dem UI-Thread; keine verschachtelte Pool-Nutzung in `read`/`with`-Closures (kein Selbst-Deadlock); Konto-Neuprüfung nach dem Warten (W3) bleibt vor der Probe |
+| `TimeoutKnob`/`Stream` | Regler wird nur unter dem Slot-Mutex verstellt; `sync()` vor jedem `read`/`write` (BufStream-Flush schreibt über `write`); Windows-Typecheck (`x86_64-pc-windows-msvc --workspace --tests`) grün; `max(1)` verhindert `set_read_timeout(0)` (Fehler unter Windows) |
+| Wiederholung | `read` nur für Ordner/Liste/Suche/Nachricht/Flags; MOVE/APPEND/EXPUNGE/CREATE/DELETE weiter `with` |
+| Editor-Kürzel (`window`-Listener) | genau ein Listener je Editor, Aufräumen im Effekt; Handbuch offen → aus; Strg+Alt (AltGr unter Windows) ausgenommen |
+| Handbuch DE/EN der geänderten Texte | inhaltlich gleich (Kürzel, Probe 30 s/8 s, Wiederholung, Umbruch 72, Seitengröße/Intervall) |
+
+Korrigiert (nur Doku): Checkliste § 5 „Hängender Server … nach ≤ 100 s“ stimmte seit Runde 3 nicht mehr — ohne Probe (Pause < 30 s) wiederholen lesende Befehle nach dem Timeout einmal mit neuer Verbindung (+ bis 20 s Verbindungsaufbau).
+
+Restrisiken (nicht behoben, kein Regressionsfix):
+- Vorschau im Experten-Editor ist ein `sandbox=""`-Iframe. Klickt man **in** die Vorschau, liegt der Tastaturfokus im Iframe; ⌘/Strg+⏎, ⌘/Strg+S, ⌘/Strg+⇧P und Esc erreichen den Editor dann nicht, bis man außerhalb klickt. Das Handbuch („auch … in der Vorschau“) gilt für den Normalfall (Umschalten per Knopf/Kürzel). Ein Fix bräuchte Fokus-Umlenkung — keine Regressionsbehebung, daher offen.
+- `drop_session` meldet sich auf einer < 4 min alten Verbindung höflich ab (LOGOUT); ist sie nach WLAN-Wechsel tot, wartet Konto speichern/entfernen bis 100 s (im Hintergrund-Thread, App bedienbar). Vorbestehend; der Regler aus Runde 3 könnte das später auf 8 s kürzen.
+
+Selbst ausgeführt: `cargo test --workspace` (mailbox 24 + 6 ignoriert, core 18) grün; Windows-Typecheck grün; `pnpm test` und `pnpm build` grün.
