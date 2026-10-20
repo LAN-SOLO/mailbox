@@ -5,7 +5,7 @@ Stand: 2026-10-20 (Runde 2, § 7; Verifikation § 8; Runde 3, § 9) · 2026-10-1
 Legende Teststatus:
 - **E2E** — automatisiert gegen einen echten IMAP/SMTP-Server (GreenMail 2.1.0 in Docker, `cargo test -p mailbox -- --ignored e2e`)
 - **Unit** — automatisierter Rust- bzw. Node-Test (`cargo test --workspace`, `pnpm test`)
-- **UI** — automatisiert im Dev-Mock über headless Chrome (`scripts/ui-smoke/ui.mjs`, 38 Prüfungen; seit Runde 3 zusätzlich `journeys.mjs`, 70 Prüfungen)
+- **UI** — automatisiert im Dev-Mock über headless Chrome (`scripts/ui-smoke/ui.mjs`, 38 Prüfungen; seit Runde 3 zusätzlich `journeys.mjs`, 72 Prüfungen)
 - **statisch** — nur Code-Review; braucht einen manuellen Test (Checkliste unten)
 
 ## 1. Feature-Inventar
@@ -420,3 +420,63 @@ Keine neuen Abhängigkeiten. Version bleibt 1.0.0.
 - [ ] macOS: ⌘S im Editor löst keinen „Seite sichern“-Dialog des WebViews aus
 - [ ] Server ohne UIDPLUS (falls verfügbar, z. B. ältere Courier-/Firmen-Server): Nachricht im Papierkorb endgültig löschen, eine zweite dort per Webmail als gelöscht markiert → nur die gewählte verschwindet
 - [ ] Platte voll / schreibgeschützter USB-Stick als Speicherziel für einen Anhang → verständliche Meldung, keine `.part`-Reste
+
+## Runde 3 – Verifikation (2026-10-20)
+
+Unabhängige, skeptische Prüfung von `ae38b50..e245b5f` (T1–T4, X1, X2, Textkorrekturen). Diff gelesen (Plattformen, Async/Rennen, i18n, Handbuch DE/EN), alle Tests selbst neu ausgeführt, 10 weitere Handbuch-Aussagen gegen den Code geprüft. „Ausgeführt“ = selbst laufen lassen; „gelesen“ = nur Code-Review.
+
+### Befunde
+
+| # | Befund | Behebung / Nachweis |
+|---|---|---|
+| V1 | **Regression aus T2 (ausgeführt nachgewiesen):** `wrapText` fror *alles* ab der Zeile „-- “ ein. Beim Antworten und Weiterleiten setzt mailbox die Signatur **über** Zitat bzw. Original — eine Antwort unter dem Zitat (Bottom-Posting) und weitergeleiteter Text wurden durch „Umbruch 72“ nicht mehr umbrochen (vor Runde 3 schon). | Signaturblock = „-- “ plus genau die Kontosignatur (wird aus dem Editor übergeben), ohne passende Signatur bis zur nächsten Leerzeile; „-- “ in einem Code-Block zählt nicht. `pnpm test` +6 Prüfungen (Negativkontrolle gegen `e245b5f`: 3 FAIL), `journeys.mjs` J6 +1 Prüfung je Sprache (Bottom-Posting unter Signatur und Zitat). Handbuch DE+EN und README angepasst. |
+| V2 | „Neu in 1.0“ versprach ohne Einschränkung, eine tote Verbindung falle „nach höchstens 8 s“ auf. Die Probe läuft nur nach > 30 s Leerlauf; darunter gilt weiter 100 s (dann ein Wiederholungsversuch bei lesenden Befehlen). | Text DE+EN: „nach mehr als 30 s Pause innerhalb von 8 s“ (wie schon in „Wenn etwas klemmt“). |
+
+### Geprüft ohne Befund (gelesen, teils ausgeführt)
+
+- T1 editorweite Kürzel: `busy`-Sperre verhindert Doppel-Senden; React-Handler des Textfelds (Formatierung, `preventDefault`) laufen vor dem `window`-Listener; der globale Listen-Handler in `App.tsx` ist bei offenem Editor aus; native Rückfragen (plugin-dialog) blockieren Eingaben ins WebView, ein Senden aus der Verwerfen-Rückfrage heraus ist so nicht möglich. Ausgeführt: J4/J6 DE/⌘ + EN/Strg.
+- T3 Seitengröße: Zwischenwerte (z. B. „2“) gehen als Live-Vorschau an die App; einzige Wirkung wäre ein genau dann fälliger Intervall-Abruf mit weniger Zeilen (Backend kappt auf 1–500), gespeichert wird immer 10–500. Bewusst nicht geändert.
+- T4: Antwort auf eigene Nachricht; „Allen antworten“ filtert eigene Adressen und Doppelte aus Cc. Ausgeführt: J11.
+- X1: `TimeoutKnob` wird vor jeder Socket-Operation übernommen, Probe setzt danach wieder 100 s (Unit); Windows meldet Timeouts als `TimedOut`, `is_timeout` erkennt beide. Alle `read`-Closures (Ordner, Liste, Suche, Nachricht/Anhang, Flags) sind ohne Seiteneffekte außerhalb der Session — ein zweiter Versuch dupliziert nichts. Slot-Mutex hält Probe und Befehl zusammen, kein Rennen um den Regler.
+- X2: Befehlsfolge ohne UIDPLUS stimmt mit RFC 4315 § 2.1 überein; Rücksetzen auch nach EXPUNGE-Fehler. Ausgeführt: Unit (Skript-Server) und E2E (GreenMail kann UIDPLUS; der Pfad ohne UIDPLUS ist nur per Skript-Server ausgeführt).
+
+### 10 weitere Handbuch-Aussagen (Stichprobe, nicht in Runde 3 genannt)
+
+| Aussage | Prüfung | Ergebnis |
+|---|---|---|
+| Fett/kursiv/… „nochmal drücken entfernt die Auszeichnung“ | `wrap()` in `Compose.tsx` erkennt Marker innerhalb und direkt außerhalb der Auswahl | stimmt (gelesen) |
+| „Zitat weg“ entfernt Zitatzeilen samt Kopfzeile | `stripQuotes` + `pnpm test` | stimmt (ausgeführt) |
+| Kürzel nur im Expertenmodus und nicht in Eingabefeldern | `App.tsx`: `if (!expert) return`, INPUT/TEXTAREA/SELECT | stimmt (gelesen; J7/J8 ausgeführt) |
+| Konto entfernen löscht nur lokale Zugangsdaten und Cache | `do_delete_account`: Liste, Session, Passwort, Cache-Ordner — kein Server-Befehl | stimmt (gelesen, Unit) |
+| Unbekannte Domain → imap./smtp.<domain> mit Standard-Ports | `core/presets.rs` + Unit `heuristic_fallback` | stimmt (ausgeführt) |
+| Prüfung vor dem Senden meldet Einträge ohne gültige Adresse | `smtp::addresses(strict)` + Unit `strict_reports_typos` | stimmt (ausgeführt) |
+| Entwurf: Speichern ersetzt den alten, nach dem Senden verschwindet er | `do_save_draft`/`do_send` → `remove_draft` (nur mit \Draft-Flag) | stimmt (gelesen; E2E-Roundtrip ausgeführt) |
+| Update-Hinweis nicht, solange ein Dialog offen ist | `App.tsx`: `updateAvail && !compose && !showSettings && !accountEdit && !folderPrompt` | stimmt (gelesen) |
+| Rechtsklick: Papierkorb leeren, eigene Ordner löschen, Rollen-Ordner geschützt | `Sidebar.tsx` `onContextMenu` (nur `role === 'other'` löscht) | stimmt (gelesen; J9 ausgeführt) |
+| Einfach-Modus zeigt Spam und ggf. Archiv | `SIMPLE_ROLES` in `Sidebar.tsx` | stimmt (gelesen) |
+
+DE/EN-Gleichstand nach den Änderungen erneut per Skript: 13/13 Abschnitte, gleiche Absatzzahl, gleiche Zahlen je Absatz (in „Neu in 1.0“ nur andere Reihenfolge von 30/8 im Satz).
+
+### Restrisiken / Hinweise (nicht behoben)
+
+- Ohne UIDPLUS gehen die fremden \Deleted-UIDs als Komma-Liste ohne Bereiche (`uid_set`) in einen Befehl. Bei sehr vielen (Tausenden) könnte ein Server die Zeile ablehnen → Löschen scheitert sichtbar mit Fehlermeldung, es geht nichts verloren.
+- Abrufintervall: UI und Handbuch begrenzen auf 0–120 Minuten, das Backend (`Settings::sanitized`) auf 0–1440. Ein früher gespeicherter Wert über 120 bleibt wirksam, bis er im Dialog geändert wird.
+- `cargo audit` zeigt neben S12 (zip, 3 Meldungen) und „unmaintained“ auch `glib` RUSTSEC-2024-0429 („unsound“, nur Linux/GTK, vorbestehend).
+- E2E: Der erste Lauf direkt nach dem Container-Start ergab 1/5 (GreenMail war noch nicht bereit); danach zweimal 5/5. Kein Code-Problem, aber beim Wiederholen ein paar Sekunden warten.
+
+### Selbst ausgeführt (nach V1/V2)
+
+| Prüfung | Ergebnis |
+|---|---|
+| `cargo test --workspace` | mailbox 24 + 6 ignoriert, core 18 — grün (Rust unverändert) |
+| E2E gegen GreenMail 2.1.0 (Docker, 43025/43143/43993) | 5/5 (zweimal) |
+| `cargo test -p mailbox -- --ignored net_tls` | grün |
+| `cargo clippy --workspace --all-targets` | 0 Warnungen |
+| Windows-Typecheck (`x86_64-pc-windows-msvc`, `--workspace --tests`, ohne Linken) | grün |
+| `cargo audit` / `pnpm audit` | S12 (zip) + Warnungen wie oben / 0 |
+| `pnpm build`, `pnpm test` | grün; 42 Prüfungen |
+| `scripts/ui-smoke/ui.mjs` | 38/38, 0 Konsolenfehler |
+| `scripts/ui-smoke/sweep.mjs` | 143/143 |
+| `scripts/ui-smoke/journeys.mjs` | 72/72 (DE/⌘ + EN/Strg), 0 Konsolenfehler |
+
+Keine neuen Abhängigkeiten, Version 1.0.0. Nur auf echter Hardware prüfbar bleibt alles aus § 7.4 und § 9.6 — dazu: „Umbruch 72“ in einer echten Antwort mit Kontosignatur (WKWebView/WebView2 `execCommand('insertText')`).

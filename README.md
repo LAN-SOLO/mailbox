@@ -7,6 +7,7 @@ Mail-Client mit zwei Modi — IMAP/SMTP, lokal, ohne Konto-Zwang.
 - **Konten:** Presets für gängige Anbieter, sonst `imap.`/`smtp.`-Heuristik — mit Verbindungstest vor dem Speichern.
 - **Privatsphäre:** externe Bilder in HTML-Mails sind blockiert, bis Sie sie laden; Passwörter liegen im Schlüsselbund des Systems.
 - **Verbindung:** IMAP-TLS über rustls 0.23 mit System-Zertifikatsspeicher + Mozilla-Wurzeln, STARTTLS ohne Klartext-Rückfall, Verbindungs-/Lese-Timeouts (20 s / 100 s) statt Hängern, Kurzprobe (NOOP, 8 s) vor dem Wiederbenutzen einer ruhenden Verbindung, ein Wiederholungsversuch nur für lesende Befehle; endgültiges Löschen auch ohne UIDPLUS nur der gewählten Nachrichten.
+- **Editor (Experte):** Markdown-Werkzeuge mit HTML-Vorschau; Umbruch 72 lässt Zitate, Code-Blöcke und die Kontosignatur stehen, Text unter Signatur und Zitat wird mit umbrochen; ⌘/Strg+⏎, ⌘/Strg+S und ⌘/Strg+⇧P wirken im ganzen Editor.
 - **Versand:** SMTP mit Anhängen, Antwort-Threading (In-Reply-To/References), Kopie in „Gesendet“, Entwürfe auf dem Server (fortsetzbar), Weiterleiten mit den Originalanhängen, strenge Adressprüfung vor dem Senden.
 
 DE/EN, signierte In-App-Updates. Keine Telemetrie.
@@ -39,7 +40,7 @@ Antwortzeiten für Reihenfolge-Tests: `window.__mockDelay = { kommando: ms | (ar
 ```sh
 node scripts/ui-smoke/ui.mjs                                     # Abläufe (38 Prüfungen)
 node --experimental-strip-types scripts/ui-smoke/sweep.mjs       # DE/EN × dunkel/hell bei 900×580: Layout, Sprache, Fehleranzeigen
-node --experimental-strip-types scripts/ui-smoke/journeys.mjs    # Nutzerabläufe DE/⌘ + EN/Strg inkl. Fehlerfällen (70 Prüfungen)
+node --experimental-strip-types scripts/ui-smoke/journeys.mjs    # Nutzerabläufe DE/⌘ + EN/Strg inkl. Fehlerfällen (72 Prüfungen)
 ```
 
 Der Rust-Kern (`core/`, Crate `mailbox-core`) ist Tauri-frei und testbar:

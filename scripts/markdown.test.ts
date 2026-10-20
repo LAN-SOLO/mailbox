@@ -26,6 +26,20 @@ eq('wrap', wrapText('a '.repeat(50).trim(), 20).split('\n').every((l) => l.lengt
   eq('wrap body', w.slice(0, w.indexOf('')).every((l) => l.length <= 72), true);
   eq('wrap keeps code block', w.includes(long), true);
   eq('wrap keeps signature', w[w.length - 1], sig);
+  // Antwort/Weiterleitung: Signatur über dem Original — Text darunter wird
+  // weiter umbrochen (Runde 3 hatte alles ab „-- “ eingefroren).
+  const below = wrapText(`\n\n-- \n${sig}\n\nAm 1.1. schrieb A:\n> ${long}\n\n${long}`).split('\n');
+  eq('wrap keeps signature above quote', below.includes(sig), true);
+  eq('wrap keeps quote', below.includes(`> ${long}`), true);
+  eq('wrap text below signature and quote', below.filter((l) => !l.startsWith('>') && l !== sig).every((l) => l.length <= 72), true);
+  // Mehrzeilige Kontosignatur mit Leerzeile: genau diese bleibt stehen.
+  const sig2 = `${sig}\n\n${sig}`;
+  const two = wrapText(`-- \n${sig2}\n\n${long}`, 72, sig2).split('\n');
+  eq('wrap keeps multi-paragraph account signature', two.filter((l) => l === sig).length, 2);
+  eq('wrap after account signature', two[two.length - 1].length <= 72, true);
+  // „-- “ im Code-Block ist keine Signatur.
+  const code = wrapText(`\`\`\`\n-- \n\`\`\`\n${long}`).split('\n');
+  eq('wrap: "-- " inside code is no signature', code.every((l) => l.length <= 72), true);
 }
 eq('stripQuotes', stripQuotes('Hi\n\nAm Mo schrieb X:\n> a\n> b'), 'Hi');
 eq('toggleQuote', toggleQuote(toggleQuote('a\nb')), 'a\nb');

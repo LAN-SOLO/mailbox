@@ -150,19 +150,34 @@ export function hasMarkup(md: string): boolean {
 // --- Text-Werkzeuge für den Editor ----------------------------------------
 
 /** Harter Umbruch bei `width` Zeichen. Unangetastet bleiben Zitatzeilen,
- *  Code-Blöcke (```) und die Signatur — alles ab der Trennzeile „-- “. */
-export function wrapText(text: string, width = 72): string {
+ *  Code-Blöcke (```) und der Signaturblock: die Trennzeile „-- “ und danach
+ *  genau die Kontosignatur (`signature`), ohne passende Signatur bis zur
+ *  nächsten Leerzeile. Text darunter (Antwort unter dem Zitat,
+ *  weitergeleiteter Text) wird weiter umbrochen — beim Antworten und
+ *  Weiterleiten steht die Signatur über dem Original. */
+export function wrapText(text: string, width = 72, signature = ''): string {
+  const lines = text.split('\n');
+  const sig = signature.replace(/\r\n?/g, '\n').replace(/\n+$/, '');
+  const sigLen = sig ? sig.split('\n').length : 0;
   let inCode = false;
-  let inSig = false;
-  return text
-    .split('\n')
-    .map((line) => {
-      if (line === '-- ') inSig = true;
+  /** Index der letzten geschützten Signaturzeile. */
+  let sigEnd = -1;
+  return lines
+    .map((line, i) => {
+      if (!inCode && line === '-- ' && i > sigEnd) {
+        if (sigLen && lines.slice(i + 1, i + 1 + sigLen).join('\n') === sig) sigEnd = i + sigLen;
+        else {
+          let j = i + 1;
+          while (j < lines.length && lines[j].trim() !== '') j++;
+          sigEnd = j - 1;
+        }
+      }
+      if (i <= sigEnd) return line;
       if (/^\s*```/.test(line)) {
         inCode = !inCode;
         return line;
       }
-      if (inSig || inCode || line.length <= width || /^\s*>/.test(line)) return line;
+      if (inCode || line.length <= width || /^\s*>/.test(line)) return line;
       const words = line.split(' ');
       const out: string[] = [];
       let cur = '';

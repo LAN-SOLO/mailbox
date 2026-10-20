@@ -131,6 +131,14 @@ async function run(lang, platform) {
   await sleep(100);
   const wrapped = await ev(`document.querySelector('.modal.compose textarea').value`);
   ok(P + 'J6 wrap 72 keeps the signature line', wrapped.endsWith(sig) && wrapped.split('\n')[0].length <= 72, JSON.stringify(wrapped));
+  // Antwort unter Signatur und Zitat (Bottom-Posting) wird mit umbrochen.
+  const long = 'wort '.repeat(30).trim();
+  await setVal('.modal.compose textarea', `\n\n-- \n${sig}\n\n> ${long}\n\n${long}`);
+  await click('.modal.compose button', t.toolWrap);
+  await sleep(100);
+  const below = (await ev(`document.querySelector('.modal.compose textarea').value`)).split('\n');
+  ok(P + 'J6 wrap 72 wraps a reply below signature and quote', below.includes(sig) && below.includes(`> ${long}`) && below.filter((l) => !l.startsWith('>') && l !== sig).every((l) => l.length <= 72), JSON.stringify(below));
+  await setVal('.modal.compose textarea', wrapped);
   await ev(`document.querySelector('.modal.compose textarea').focus(); true`);
   await chord('P', 'KeyP', 80, SHIFT);
   await sleep(150);

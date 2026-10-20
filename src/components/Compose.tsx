@@ -540,7 +540,7 @@ export function Compose({
                 {t.toolQuoteOriginal}
               </button>
             )}
-            <button className="tool" title={t.toolWrapTitle} disabled={preview} onClick={() => replaceAll((s) => wrapText(s, 72))}>
+            <button className="tool" title={t.toolWrapTitle} disabled={preview} onClick={() => replaceAll((s) => wrapText(s, 72, accounts.find((a) => a.id === accountId)?.signature ?? ''))}>
               {t.toolWrap}
             </button>
             {/\n\s*>/.test(`\n${body}`) && (
