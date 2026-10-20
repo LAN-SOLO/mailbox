@@ -533,7 +533,10 @@ export default function App() {
   const reply = (all: boolean) => {
     if (!detail) return;
     const d = detail;
-    const replyTo = d.replyTo.length ? d.replyTo : d.from;
+    // Eigene Nachricht (z. B. aus „Gesendet“) beantworten: an die damaligen
+    // Empfänger statt an sich selbst.
+    const fromSelf = d.from.length > 0 && d.from.every((a) => ownEmails.has(a.email.toLowerCase()));
+    const replyTo = d.replyTo.length ? d.replyTo : fromSelf && d.to.length ? d.to : d.from;
     const to = replyTo.map(fmtAddress).join(', ');
     const cc = all
       ? [...d.to, ...d.cc]

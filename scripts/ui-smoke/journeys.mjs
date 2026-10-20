@@ -209,6 +209,19 @@ async function run(lang, platform) {
   await sleep(300);
   ok(P + 'J10 restart mid-compose: clean start, no editor, expert mode kept', !(await ev(`!!document.querySelector('.modal.compose')`)) && (await ev(`!!document.querySelector('.listbar select')`)));
 
+  // J11 Eigene Nachricht beantworten (Entwurf von Max an Anna): an Anna, nicht an sich selbst
+  await ev(`([...document.querySelectorAll('.sb-folder')].find(e => e.title === 'Drafts').click(), true)`);
+  await waitFor(`document.querySelectorAll('.msg').length === 1`);
+  await click('.msg', 'Angebot nachfassen');
+  await waitFor(`document.querySelector('.readhead h1')?.textContent.includes('Angebot nachfassen')`);
+  await sleep(150);
+  await click('.readbar button', t.replyAll);
+  await waitFor(`document.querySelector('.modal.compose')`);
+  const rTo = await ev(`document.querySelector('.modal.compose label.field:nth-of-type(2) input').value`);
+  ok(P + 'J11 reply to own message goes to its recipients', rTo.includes('anna@lan-solo.test') && !rTo.includes('max@lan-solo.test'), rTo);
+  await key('Escape');
+  await sleep(250);
+
   const errors = b.logs.filter((l) => !/favicon/.test(l));
   ok(P + 'no console errors', errors.length === 0, JSON.stringify(errors));
   b.close();

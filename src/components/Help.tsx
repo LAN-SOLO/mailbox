@@ -186,7 +186,7 @@ const de: Content = {
       body: [
         '„Neue Nachricht“ öffnet den Editor mit Konto-Auswahl, Empfängern, Betreff und Text. Cc und Bcc lassen sich einblenden.',
         '• Empfänger frei eingeben: „Name <adresse>“ oder nur die Adresse, mehrere durch Komma.',
-        '• Antworten setzt Betreff (Re:) und Zitat; „Allen antworten“ nimmt alle Empfänger außer Ihnen selbst. Weiterleiten übernimmt den Text mit Kopfzeilen und die Anhänge des Originals — einzelne lassen sich vor dem Senden mit ✕ entfernen.',
+        '• Antworten setzt Betreff (Re:) und Zitat; „Allen antworten“ nimmt alle Empfänger außer Ihnen selbst; eine eigene Nachricht (z. B. aus „Gesendet“) beantworten Sie an deren Empfänger. Weiterleiten übernimmt den Text mit Kopfzeilen und die Anhänge des Originals — einzelne lassen sich vor dem Senden mit ✕ entfernen.',
         '• Anhänge über „Anhang …“ (Dateidialog, Mehrfachauswahl).',
         '• „Senden“ verschickt über SMTP und legt eine Kopie im Gesendet-Ordner ab. „Als Entwurf speichern“ legt die Nachricht im Entwürfe-Ordner des Servers ab.',
         '• Im einfachen Modus gehen Nachrichten als Klartext raus (Experte: wahlweise mit HTML-Teil) — die Signatur des Kontos wird automatisch angehängt.',
@@ -429,7 +429,7 @@ const en: Content = {
       body: [
         '“New message” opens the editor with account selection, recipients, subject and text. Cc and Bcc can be revealed.',
         '• Enter recipients freely: “Name <address>” or just the address, several separated by commas.',
-        '• Reply sets the subject (Re:) and quote; “Reply all” takes all recipients except yourself. Forward takes over the text with header lines and the original’s attachments — remove single ones with ✕ before sending.',
+        '• Reply sets the subject (Re:) and quote; “Reply all” takes all recipients except yourself; replying to one of your own messages (e.g. from “Sent”) goes to its recipients. Forward takes over the text with header lines and the original’s attachments — remove single ones with ✕ before sending.',
         '• Attachments via “Attach …” (file dialog, multi-select).',
         '• “Send” delivers via SMTP and stores a copy in the Sent folder. “Save as draft” stores the message in the server’s Drafts folder.',
         '• In simple mode messages go out as plain text (expert: optionally with an HTML part) — the account signature is appended automatically.',

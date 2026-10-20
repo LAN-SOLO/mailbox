@@ -5,7 +5,7 @@ Stand: 2026-10-20 (Runde 2, § 7; Verifikation § 8; Runde 3, § 9) · 2026-10-1
 Legende Teststatus:
 - **E2E** — automatisiert gegen einen echten IMAP/SMTP-Server (GreenMail 2.1.0 in Docker, `cargo test -p mailbox -- --ignored e2e`)
 - **Unit** — automatisierter Rust- bzw. Node-Test (`cargo test --workspace`, `pnpm test`)
-- **UI** — automatisiert im Dev-Mock über headless Chrome (`scripts/ui-smoke/ui.mjs`, 38 Prüfungen; seit Runde 3 zusätzlich `journeys.mjs`, 68 Prüfungen)
+- **UI** — automatisiert im Dev-Mock über headless Chrome (`scripts/ui-smoke/ui.mjs`, 38 Prüfungen; seit Runde 3 zusätzlich `journeys.mjs`, 70 Prüfungen)
 - **statisch** — nur Code-Review; braucht einen manuellen Test (Checkliste unten)
 
 ## 1. Feature-Inventar
@@ -357,6 +357,7 @@ Basis: `ae38b50`. Ziel: jede Aussage in Handbuch (DE/EN), README und In-App-Text
 |---|---|---|---|
 | T1 | „⌘⏎ sendet, ⌘S speichert als Entwurf“, „Vorschau (⌘⇧P)“ | Die Kürzel hingen am Textfeld: aus An/Cc/Betreff wirkungslos; in der Vorschau gibt es kein Textfeld → ⌘⇧P kam nicht zurück, ⌘⏎/⌘S taten nichts. | Kürzel editorweit (`window`-Listener in `Compose.tsx`, gesperrt solange das Handbuch offen ist); Formatierung (⌘B/I/E/K/⇧X) bleibt am Textfeld. `journeys.mjs` J4/J6 (DE ⌘ / EN Strg mit `navigator.platform = Win32`); Negativkontrolle mit altem Code: 5 FAIL. |
 | T2 | „Umbruch 72 … Zitate und Signatur bleiben unangetastet“ | Nur die Trennzeile „-- “ blieb; lange Signaturzeilen und Code-Blöcke (```) wurden umgebrochen. | `wrapText`: ab „-- “ und in Code-Blöcken kein Umbruch. `pnpm test` (3 neue Prüfungen), J6. |
+| T4 | „Allen antworten nimmt alle Empfänger außer Ihnen selbst“ | Antwort auf eine eigene Nachricht (Gesendet/Entwürfe) ging an einen selbst (Absender = eigene Adresse). | Ist der Absender eine eigene Adresse und kein Reply-To gesetzt, geht die Antwort an die damaligen Empfänger (`App.tsx`). J11. |
 | T3 | Einstellungen → Lesen: Seitengröße | Das Feld begrenzte bei jedem Tastendruck auf ≥ 10: „25“ tippen ergab über „2“ → „10“ dann „105“. | Begrenzung 10–500 erst beim Verlassen/Speichern; Abrufintervall 0–120 wie das Feld. J9. |
 
 ### 9.2 Ungenaue Aussagen → Text korrigiert (DE+EN gleich)
@@ -379,7 +380,7 @@ Bestätigt ohne Befund (Code gelesen, teils UI): Server-Vorschlag beim Verlassen
 
 ### 9.4 Nutzerabläufe (`scripts/ui-smoke/journeys.mjs`, neu)
 
-Je Durchlauf **DE mit macOS-Kürzeln (⌘)** und **EN mit Windows-Kürzeln (Strg)**, 34 Prüfungen × 2, headless Chromium gegen den Dev-Mock. Der Mock bildet nun auch das Abbrechen der Datei-Dialoge nach (`plugin:dialog|open/save` → `null`, wie plugin-dialog 2.7; `window.__mockDialogCancel`).
+Je Durchlauf **DE mit macOS-Kürzeln (⌘)** und **EN mit Windows-Kürzeln (Strg)**, 35 Prüfungen × 2, headless Chromium gegen den Dev-Mock. Der Mock bildet nun auch das Abbrechen der Datei-Dialoge nach (`plugin:dialog|open/save` → `null`, wie plugin-dialog 2.7; `window.__mockDialogCancel`).
 
 | | Ablauf | Ergebnis |
 |---|---|---|
@@ -393,6 +394,7 @@ Je Durchlauf **DE mit macOS-Kürzeln (⌘)** und **EN mit Windows-Kürzeln (Strg
 | J8 | Server-Suche: / fokussiert, Enter, Esc beendet | ok |
 | J9 | Seitengröße „25“ tippen, zu klein → 10 beim Speichern; Rechtsklick auf Rollen-Ordner löscht nicht, eigener Ordner nach Rückfrage | ok |
 | J10 | **Neustart mitten im Schreiben**: sauberer Start, kein Editor-Rest, Modus bleibt | ok — ungespeicherter Text ist verloren (kein Autosave; das Handbuch verspricht keins) |
+| J11 | Eigene Nachricht (Entwurf) „Allen antworten“ → an deren Empfänger, nicht an sich selbst | ok (vorher falsch) |
 
 ### 9.5 Selbst ausgeführt (nach den Fixes)
 
@@ -407,7 +409,7 @@ Je Durchlauf **DE mit macOS-Kürzeln (⌘)** und **EN mit Windows-Kürzeln (Strg
 | `pnpm build`, `pnpm test` | grün; 36 Prüfungen |
 | `scripts/ui-smoke/ui.mjs` | 38/38, 0 Konsolenfehler |
 | `scripts/ui-smoke/sweep.mjs` | 143/143 |
-| `scripts/ui-smoke/journeys.mjs` | 68/68 (DE/⌘ + EN/Strg), 0 Konsolenfehler |
+| `scripts/ui-smoke/journeys.mjs` | 70/70 (DE/⌘ + EN/Strg), 0 Konsolenfehler |
 
 Keine neuen Abhängigkeiten. Version bleibt 1.0.0.
 

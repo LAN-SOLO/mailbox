@@ -39,7 +39,7 @@ Antwortzeiten für Reihenfolge-Tests: `window.__mockDelay = { kommando: ms | (ar
 ```sh
 node scripts/ui-smoke/ui.mjs                                     # Abläufe (38 Prüfungen)
 node --experimental-strip-types scripts/ui-smoke/sweep.mjs       # DE/EN × dunkel/hell bei 900×580: Layout, Sprache, Fehleranzeigen
-node --experimental-strip-types scripts/ui-smoke/journeys.mjs    # Nutzerabläufe DE/⌘ + EN/Strg inkl. Fehlerfällen (68 Prüfungen)
+node --experimental-strip-types scripts/ui-smoke/journeys.mjs    # Nutzerabläufe DE/⌘ + EN/Strg inkl. Fehlerfällen (70 Prüfungen)
 ```
 
 Der Rust-Kern (`core/`, Crate `mailbox-core`) ist Tauri-frei und testbar:
