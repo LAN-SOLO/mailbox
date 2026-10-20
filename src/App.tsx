@@ -534,8 +534,10 @@ export default function App() {
     if (!detail) return;
     const d = detail;
     // Eigene Nachricht (z. B. aus „Gesendet“) beantworten: an die damaligen
-    // Empfänger statt an sich selbst.
-    const fromSelf = d.from.length > 0 && d.from.every((a) => ownEmails.has(a.email.toLowerCase()));
+    // Empfänger statt an sich selbst. „Eigen“ heißt: von genau diesem Konto —
+    // eine Mail vom *anderen* eigenen Konto geht wie jede andere an den Absender.
+    const me = accounts.find((a) => a.id === d.accountId)?.email.toLowerCase();
+    const fromSelf = d.from.length > 0 && d.from.every((a) => a.email.toLowerCase() === me);
     const replyTo = d.replyTo.length ? d.replyTo : fromSelf && d.to.length ? d.to : d.from;
     const to = replyTo.map(fmtAddress).join(', ');
     const cc = all

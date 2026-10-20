@@ -146,6 +146,8 @@ function detail(uid: number): MessageDetail {
       ['Message-ID', `<msg-${uid}@lan-solo.test>`],
       ['X-Mailer', 'mock'],
     ],
+    // Test: Felder der geöffneten Nachricht überschreiben (z. B. Absender).
+    ...((window as unknown as Record<string, unknown>).__mockDetailPatch as Partial<MessageDetail> | undefined),
   };
 }
 

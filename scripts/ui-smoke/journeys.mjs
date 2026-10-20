@@ -230,6 +230,22 @@ async function run(lang, platform) {
   await key('Escape');
   await sleep(250);
 
+  // J12 Nachricht vom *anderen* eigenen Konto (Büro → Max) beantworten: an
+  // den Absender (Büro), nicht an das Konto, aus dem man antwortet.
+  await ev(`(window.__mockDetailPatch = { from: [{ name: 'Büro', email: 'buero@lan-solo.test' }], to: [{ name: 'Max Muster', email: 'max@lan-solo.test' }] }, true)`);
+  await ev(`([...document.querySelectorAll('.sb-folder')].find(e => e.title === 'INBOX').click(), true)`);
+  await waitFor(`document.querySelectorAll('.msg').length === 3`);
+  await click('.msg', 'Willkommen');
+  await waitFor(`document.querySelector('.readhead h1')?.textContent.includes('Willkommen')`);
+  await sleep(150);
+  await ev(`([...document.querySelectorAll('.readbar button')].find(e => e.textContent.trim() === ${JSON.stringify(t.reply)}).click(), true)`);
+  await waitFor(`document.querySelector('.modal.compose')`);
+  const r2 = await ev(`document.querySelector('.modal.compose label.field:nth-of-type(2) input').value`);
+  ok(P + 'J12 reply to mail from own other account goes to its sender', r2.includes('buero@lan-solo.test') && !r2.includes('max@lan-solo.test'), r2);
+  await ev(`(window.__mockDetailPatch = undefined, true)`);
+  await key('Escape');
+  await sleep(250);
+
   const errors = b.logs.filter((l) => !/favicon/.test(l));
   ok(P + 'no console errors', errors.length === 0, JSON.stringify(errors));
   b.close();

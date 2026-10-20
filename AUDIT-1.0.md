@@ -500,3 +500,15 @@ Restrisiken (nicht behoben, kein Regressionsfix):
 - `drop_session` meldet sich auf einer < 4 min alten Verbindung höflich ab (LOGOUT); ist sie nach WLAN-Wechsel tot, wartet Konto speichern/entfernen bis 100 s (im Hintergrund-Thread, App bedienbar). Vorbestehend; der Regler aus Runde 3 könnte das später auf 8 s kürzen.
 
 Selbst ausgeführt: `cargo test --workspace` (mailbox 24 + 6 ignoriert, core 18) grün; Windows-Typecheck grün; `pnpm test` und `pnpm build` grün.
+
+## Runde 4 – Regressionen (behaviour)
+
+Prüfung von `ae38b50..0434bef` mit Blick auf Nutzerverhalten und Datensicherheit: für jede geänderte Funktion Eingaben, die vorher funktionierten, gegen den neuen Stand (Vergleich im temporären Worktree).
+
+| # | Befund | Behebung / Nachweis |
+|---|---|---|
+| R1 | **Regression aus T4:** „eigene Nachricht“ war jede Mail von *irgendeinem* eigenen Konto. Eine Mail vom zweiten eigenen Konto (Büro → Max) ging beim Antworten aus Max’ Posteingang an Max selbst statt an Büro (vor Runde 3 korrekt an Büro). | `App.tsx`: eigen = Absender ist genau das Konto der Nachricht; „Allen antworten“ filtert weiterhin alle eigenen Adressen aus Cc. `journeys.mjs` J12 (DE/⌘ + EN/Strg; Mock-Hook `__mockDetailPatch`): vor dem Fix FAIL („Max Muster <max@…>“), danach ok; J11 weiter ok. |
+
+Geprüft ohne Befund (gelesen): Kurzprobe/Wiederholung (`read` nur für Ordner, Liste, Suche, Nachricht/Anhang, Flags — keine Seiteneffekte außerhalb der Session; Cache wird erst nach dem Abruf geschrieben), `expunge_uids` mit/ohne UIDPLUS inkl. `do_move`-Rückfall (meldet einen `UID EXPUNGE`-Fehler jetzt sichtbar statt den ganzen Ordner zu leeren — höchstens Dublette, kein Verlust), Klartext-/TLS-Datenstrom mit Regler, editorweite Kürzel (Formatierung nur Experte, ⌘⏎/⌘S in beiden Modi wie vorher), `wrapText` mit Kontosignatur (Signatur mit Schluss-Leerzeile, Leerzeile in der Signatur, fremde „-- “ im weitergeleiteten Original), Seitengröße/Abrufintervall (kein automatischer Neuabruf bei Live-Vorschau; gespeichert wird 10–500).
+
+Selbst ausgeführt: `cargo test --workspace` (24 + 6 ignoriert, 18) grün; `pnpm test`, `pnpm build` grün; `ui.mjs` ALL OK; `journeys.mjs` 72/74 — die 2 FAIL sind J2 „servers suggested on blur“ und treten auch auf dem unveränderten Stand `0434bef` im Worktree auf (headless-`blur` ohne Fensterfokus, vermutlich parallele Chrome-Instanzen; Code von J2 in dieser Runde unverändert). Keine neuen Abhängigkeiten, Version 1.0.0.
